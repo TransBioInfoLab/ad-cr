@@ -62,7 +62,6 @@ Cognitive reserve (CR) refers to differences in the adaptability of cognitive pr
 | code/markdown/05d_summarize_combp.Rmd         | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/05d_summarize_combp.Rmd) |
 | code/markdown/05e_get_smoking_summaries.Rmd   | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/05e_get_smoking_summaries.Rmd) |
 
-|----------------------|-------------|
 ### 6. Re-run correlations adjusting for Education
 
 | File                 | Link |
