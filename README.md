@@ -50,9 +50,10 @@ Cognitive reserve (CR) refers to differences in the adaptability of cognitive pr
 | File                 | Link |
 |----------------------|-------------|
 | code/markdown/04a_miami_plot.Rmd              | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/04a_miami_plot.Rmd) |
-| code/markdown/04b_dmr_plots.Rmd               | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/04b_dmr_plots.Rmd) |
+| No association between DNAm vs. pTau or memory (DMRs)  | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/04b_dmr_plots.Rmd) |
+| No association between DNAm vs. pTau or memory (CpGs)  | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/_DNAm_pTau_interaction_plots_MCI_12-14-2025.Rmd) |
 
-### 5. Sensitivity analysis that additionally adjust smoking status
+### 5. Sensitivity analysis that additionally adjusts smoking status
 
 | File                 | Link |
 |----------------------|-------------|
@@ -61,4 +62,14 @@ Cognitive reserve (CR) refers to differences in the adaptability of cognitive pr
 | code/markdown/05c_prepare_combp.Rmd           | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/05c_prepare_combp.Rmd) |
 | code/markdown/05d_summarize_combp.Rmd         | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/05d_summarize_combp.Rmd) |
 | code/markdown/05e_get_smoking_summaries.Rmd   | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/05e_get_smoking_summaries.Rmd) |
+
+### 5. Methylation-based Reserve Scores
+
+| File                 | Link |
+|----------------------|-------------|
+| compute MRS   | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/_compute_mrs_MCI_11-1-2025.Rmd) |
+| MRS predicts future visits  | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/_ADNI-future-visits-PHC-MEM_MCI-Z-score-MRS_11-11-2025.Rmd) |
+
+
+
 
