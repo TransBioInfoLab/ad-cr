@@ -1,0 +1,193 @@
+---
+title: "Compute Methylation-based Resilience Score (MRS)"
+author: LW
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+  word_document: default
+  pdf_document: default
+---
+
+# Overview
+
+This document computes a methylation-based resilience score (MRS) for each sample using a specified set of CpGs, a DNAm beta matrix, and per-CpG statistics (\(\gamma\) = DNAm coefficient for the interaction term; and \(\beta_{pTau}\) = main effect of pTau).
+
+The score is defined as:
+
+\[
+\text{MRS}_{\text{raw}, j} = \sum_{i \in \text{CpGs}} \Big(\beta_{pTau,i} + \gamma_i \cdot \text{DNAm}_{ij}\Big),
+\quad
+\text{and}\quad
+\text{MRS} = 100 + 100 \times \text{MRS}_{\text{raw}}.
+\]
+
+# Setup
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 7, fig.height = 5)
+library(tidyverse)
+library(readr)
+library(dplyr)
+library(tibble)
+
+out_dir <- "C:/Users/lxw391/Lily Wang/AD_CR/analysis_results/only_amyloid_positive_2_stage_approach/mrs"
+```
+
+# Function: `compute_mrs`
+
+```{r compute-fn}
+#' Compute Methylation-based Resilience Score (MRS)
+#'
+#' @param beta_mat   numeric matrix/data.frame of DNAm beta values with
+#'                   colnames = CpG IDs and rownames = sample IDs.
+#' @param weight_df  data.frame with per-CpG statistics; must contain columns:
+#'                   CpG ID, gamma (DNAm coefficient), and beta_ptau.
+#' @param transform_0_100 logical; if TRUE, returns MRS = 100 - 100*MRS_raw
+#' @return list with
+#'   - mrs_by_sample: data.frame(sample_id, MRS_raw, mrs) 
+#'     where MRS_raw = person-specific slope for pTau which is dependent on methylation beta values
+#'          mrs = 100 - 100*MRS_raw
+#'   - wide: data.frame (cpg, gamma, beta_ptau, sample ids...)
+#'     where gamma = coef of dnam x pTau interaction 
+#'           beta_pTau = coef of pTau  in linear model memory_residual ~ dnam + pTau + dnam x pTau
+#'     under each sample IDs are component scores of the MRS for each CpG, 
+#'     MRS_raw is the average over all the cpgs
+
+compute_mrs <- function(beta_mat, weights_df) {
+  stopifnot(all(c("cpg", "gamma", "beta_ptau") %in% names(weights_df)))
+  
+  B <- as.matrix(beta_mat)
+  if (is.null(rownames(B))) rownames(B) <- paste0("S", seq_len(nrow(B)))
+  
+  ## Align CpGs
+  sel <- intersect(weights_df$cpg, colnames(B))
+  if (!length(sel))
+    stop("No overlapping CpGs between weights_df$cpg and beta_mat colnames.")
+  wdf <- weights_df[match(sel, weights_df$cpg), , drop = FALSE]
+  B   <- B[, sel, drop = FALSE]
+  
+  ## Working DNAm matrix 
+  M <- B * 100
+
+  ## Parameters
+  gamma <- as.numeric(wdf$gamma); names(gamma) <- wdf$cpg
+  bp    <- as.numeric(wdf$beta_ptau)
+  samp_ids <- rownames(M); safe_ids <- make.names(samp_ids, unique = TRUE)
+  
+  ## Linear mode only: product = beta_ptau + gamma * DNAm
+  prod_mat <- sweep(M, 2, gamma, "*")
+  prod_mat <- prod_mat + matrix(bp, nrow = nrow(M), ncol = ncol(M), byrow = TRUE)
+  
+  wide <- data.frame(cpg = sel, gamma = gamma, beta_ptau = bp, stringsAsFactors = FALSE)
+  for (i in seq_along(samp_ids)) {
+    wide[[paste0(safe_ids[i], "_dnam")]]    <- as.numeric(M[i, ])
+    wide[[paste0(safe_ids[i], "_product")]] <- as.numeric(prod_mat[i, ])
+  }
+  
+  ## Per-sample MRS = mean of products across CpGs
+  mrs_by_sample <- data.frame(
+    sample_id = samp_ids,
+    MRS_raw   = rowMeans(prod_mat, na.rm = TRUE),
+    stringsAsFactors = FALSE
+  )
+  
+  # final mrs (kept same as before)
+  mrs_by_sample$mrs <- 100 * mrs_by_sample$MRS_raw + 100
+  
+  ## Append "MRS" summary row to `wide` (DNAm cols NA; product cols hold MRS_raw)
+  mrs_row <- wide[1, , drop = FALSE]; mrs_row[1, ] <- NA; mrs_row$cpg <- "MRS"
+  for (i in seq_along(samp_ids)) {
+    mrs_row[[paste0(safe_ids[i], "_product")]] <- mrs_by_sample$MRS_raw[i]
+    # To store the final mrs instead, use:
+    # mrs_row[[paste0(safe_ids[i], "_product")]] <- mrs_by_sample$mrs[i]
+  }
+  wide <- rbind(wide, mrs_row); rownames(wide) <- NULL
+  
+  out <- list(wide = wide, mrs_by_sample = mrs_by_sample)
+  attr(out, "weights_used") <- gamma
+  out
+}
+
+
+
+```
+
+# Inputs
+```{r inputs}
+# CpGs to include (filtering by IQR_include == 1)
+mci_cpgs <- readr::read_csv("C:/Users/lxw391/Lily Wang/AD_CR/analysis_results/only_amyloid_positive_2_stage_approach/comb-p-DMRs/MCI_mQTLs_inputs.csv")
+mci_cpgs <- subset(mci_cpgs, IQR_include == 1)
+
+# DNAm beta matrix (rows expected to be CpGs after we set rownames)
+beta_MCI <- readr::read_csv("C:/Users/lxw391/Lily Wang/AD_CR/analysis_results/only_amyloid_positive_2_stage_approach/sig_probes/beta_MCI.csv")
+
+# Interaction statistics (for gamma weights)
+stats_intxn <- readr::read_csv("C:/Users/lxw391/Lily Wang/AD_CR/analysis_results/only_amyloid_positive_2_stage_approach/linear_model_MCI/PHC_stats_bacon_interact.csv")
+
+# interaction weights (gamma)
+weights_df <- stats_intxn %>%
+  dplyr::filter(CpG %in% mci_cpgs$cpgs) %>%
+  dplyr::transmute(cpg = CpG, gamma = estimate / 100)  # model used beta (0-1)
+
+# Main effect of pTau per CpG
+stats_pTau <- readr::read_csv("C:/Users/lxw391/Lily Wang/AD_CR/analysis_results/only_amyloid_positive_2_stage_approach/linear_model_MCI/PHC_stats_bacon_ptau.csv")
+
+coef_pTau <- stats_pTau %>%
+  dplyr::filter(CpG %in% beta_MCI$cpg) %>%
+  dplyr::transmute(cpg = CpG, beta_ptau = estimate)
+
+# add beta_ptau to each CpG in weights_df
+weights_df <- dplyr::left_join(weights_df, coef_pTau, by = "cpg")
+
+# Convert beta_MCI to a matrix with CpGs as rownames
+# Assumes a column named 'cpg' contains CpG IDs and all other columns are sample beta values
+beta_mat <- beta_MCI %>%
+  as.data.frame() %>%
+  tibble::column_to_rownames("cpg") %>%
+  as.matrix() %>%
+  t()
+
+# CpG list to use
+cpgs_to_use <- unique(mci_cpgs$cpgs)
+length(cpgs_to_use)
+```
+
+# Run
+
+```{r run}
+out <- compute_mrs(
+  beta_mat = beta_mat,
+  weights_df = weights_df
+)
+
+# Inspect
+head(out$mrs_by_sample)
+
+# Simple QC plot
+hist (out$mrs_by_sample$MRS_raw)
+hist (out$mrs_by_sample$mrs)
+
+```
+
+# Save Outputs
+
+```{r save}
+# Save per-sample scores
+
+write.csv(out$mrs_by_sample, file.path(out_dir, "MCI_MRS_scores.csv"), row.names = FALSE)
+
+write.csv(out$wide, file.path(out_dir, "MCI_MRS_scores_components.csv"), row.names = FALSE)
+
+
+
+
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```

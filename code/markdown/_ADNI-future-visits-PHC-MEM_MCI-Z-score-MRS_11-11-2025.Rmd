@@ -1,0 +1,454 @@
+---
+title: "MRS × Time Mixed Models, Spaghetti Plots, Comparison of baseline vars by MRS tertiles"
+author: "LW"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: show
+    encoding: UTF-8
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Paths & Libraries
+
+```{r libraries-and-paths}
+# Libraries
+library(dplyr)
+library(readr)
+library(lme4)
+library(lmerTest)
+library(broom.mixed)
+library(ggplot2)
+library(tidyr)
+library(knitr)
+
+# ---- Define directories using file.path() ----
+base_dir <- file.path("C:", "Users", "lxw391", "Lily Wang")
+
+# AD_CR analysis folders
+ad_cr_dir       <- file.path(base_dir, "AD_CR")
+analysis_dir    <- file.path(ad_cr_dir, "analysis_results", "only_amyloid_positive_2_stage_approach")
+out_dir         <- file.path(analysis_dir, "mrs")
+sig_probes_dir  <- file.path(analysis_dir, "sig_probes")
+
+# ADSP PHC (cognition) folder
+adsp_phc_dir    <- file.path(base_dir, "DATASETS", "ADNI", "Phenotype", "raw", "ADSP-PHC_8-2025")
+
+# ---- File paths ----
+pheno_path      <- file.path(sig_probes_dir, "Phenotypes.csv")
+cogn_path       <- file.path(adsp_phc_dir, "ADSP_PHC_COGN_22Aug2025.csv")
+mrs_scores_path <- file.path(out_dir, "MCI_mrs_scores.csv")
+
+# Ensure output directory exists
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+# Load & Prepare Data
+
+```{r load-and-prep}
+# --- Load & prep --------------------------------------------------------------
+pheno_df <- read_csv(pheno_path)
+pheno_df$PHASE    <- pheno_df$Phase
+pheno_df$EXAMDATE <- pheno_df$Edate
+
+# One row per RID already (MCI visit with DNAm/biomarker/cognition date)
+mci <- subset(pheno_df, PHC_Diagnosis == 2,
+              select = c(sample, RID, PHASE, EXAMDATE, age_at_visit, PHC_Age_Biomarker,
+                         APOE4, Gender, B, Mono, CD4T, Neutro, Eosino, NK, PHC_pTau)) %>%
+  mutate(EXAMDATE = as.Date(EXAMDATE)) %>%
+  rename(dnam_date = EXAMDATE) %>%
+  rename(baseline_age = age_at_visit ) %>%
+  mutate(Gran = Neutro + Eosino)
+
+# Cognition longitudinal file
+cogn <- read_csv(cogn_path) %>%
+  select(RID, PHASE, EXAMDATE, PHC_Education, PHC_MEM,
+         PHC_Age_Cognition, PHC_Diagnosis, PHC_Sex) %>%
+  mutate(EXAMDATE = as.Date(EXAMDATE))
+
+# --- Keep only COGN visits AFTER the single MCI visit per RID -----------------
+both <- cogn %>%
+  inner_join(mci, by = "RID") %>%
+  filter(EXAMDATE > dnam_date)
+
+# Add time since MCI in YEARS
+both <- both %>%
+  mutate(time = as.numeric(difftime(EXAMDATE, dnam_date, units = "days"))/365.25)
+
+# --- Get baseline PHC_MEM at the MCI date (baseline_MEM) ----------------------
+baseline_mem <- cogn %>%
+  select(RID, EXAMDATE, PHC_MEM) %>%
+  inner_join(mci %>% select(RID, dnam_date), by = "RID") %>%
+  filter(EXAMDATE == dnam_date) %>%
+  transmute(RID, baseline_MEM = PHC_MEM)
+
+# Attach baseline_MEM to longitudinal rows
+both <- both %>%
+  left_join(baseline_mem, by = "RID")
+
+# -- add baseline pTau from the MCI visit (dnam_date)
+baseline_pTau <- mci %>%
+  dplyr::select(RID, baseline_pTau = PHC_pTau)
+
+# attach baseline_pTau and baseline_MEM to longitudinal rows
+both <- both %>%
+  dplyr::left_join(baseline_mem,  by = "RID") %>%
+  dplyr::left_join(baseline_pTau, by = "RID")
+
+# --- Merge MRS scores ---------------------------------------------------------
+mrs <- read_csv(mrs_scores_path)
+mrs_cogn <- merge(mrs, both, by.x = "sample_id", by.y = "sample")
+```
+
+# number of visits 
+```{r}
+# --- Post-MCI visits for subjects with MRS (use mrs_cogn) --------------------
+mrs_cogn_unique <- mrs_cogn %>% dplyr::distinct(RID, EXAMDATE, .keep_all = TRUE)
+
+visits_post_mrs <- mrs_cogn_unique %>%
+  dplyr::group_by(RID) %>%
+  dplyr::summarize(
+    n_visits_post     = dplyr::n(),
+    dnam_date         = min(dnam_date),          # should be identical within RID
+    first_post_date   = min(EXAMDATE),
+    last_post_date    = max(EXAMDATE),
+    # years since DNAm date to the (chronologically) last post visit:
+    followup_years_post = max(time, na.rm = TRUE),
+    # If you prefer to compute directly from dates instead of `time`, use:
+    # followup_years_post = as.numeric(difftime(last_post_date, dnam_date, units = "days"))/365.25,
+    .groups = "drop"
+  )
+
+# Distribution table
+visits_post_mrs_dist <- visits_post_mrs %>%
+  dplyr::count(n_visits_post, name = "n_subjects") %>%
+  dplyr::arrange(n_visits_post)
+
+# Save
+readr::write_csv(visits_post_mrs,      file.path(out_dir, "visit_counts_postMCI_MRSonly.csv"))
+readr::write_csv(visits_post_mrs_dist, file.path(out_dir, "visit_counts_postMCI_MRSonly_dist.csv"))
+```
+
+# Mixed-Effects Models
+
+```{r mixed-models}
+df <- mrs_cogn
+df$RID     <- factor(df$RID)
+df$PHC_Sex <- factor(df$PHC_Sex)
+
+df$mrs_z <- as.numeric(scale(df$MRS_raw)) 
+df$baseline_age_z <- as.numeric(scale(df$baseline_age))
+
+f <- lmer(
+  PHC_MEM ~ baseline_age_z + PHC_Sex + APOE4 + PHC_Education + mrs_z + baseline_pTau + 
+    mrs_z*time + baseline_pTau*time + mrs_z*baseline_pTau 
+      + (1 | RID),
+  data = df,
+  REML = TRUE
+)
+summary(f)
+
+g <- lmer(
+  PHC_MEM ~ baseline_age_z + PHC_Sex + APOE4 + PHC_Education + mrs_z*time*baseline_pTau
+      + (1 | RID),
+  data = df,
+  REML = TRUE
+)
+summary(g)
+
+```
+
+```{r}
+# --- Build tertiles and make High MRS the reference ---------------------------
+# df <- mrs_cogn %>%
+#   dplyr::filter(!is.na(mrs_z), !is.na(PHC_MEM), !is.na(time))
+
+mrs_cutoffs <- stats::quantile(df$mrs_z, probs = c(1/3, 2/3), na.rm = TRUE)
+
+df <- df %>%
+  mutate(
+    MRS.group = cut(
+      mrs_z,
+      breaks = c(-Inf, mrs_cutoffs[1], mrs_cutoffs[2], Inf),
+      labels = c("Low MRS", "Mid MRS", "High MRS"),
+      include.lowest = TRUE, right = TRUE
+    ),
+    # >>> High as reference <<<
+    MRS.group = factor(MRS.group, levels = c("High MRS","Mid MRS","Low MRS")),
+    RID     = factor(RID),
+    PHC_Sex = factor(PHC_Sex)
+  )
+
+# --- Mixed models (High MRS is the reference) ---------------------------------
+f_cat <- lmer(
+  PHC_MEM ~ baseline_age_z + PHC_Sex + APOE4 + PHC_Education + MRS.group + baseline_pTau + 
+    MRS.group*time + baseline_pTau*time + MRS.group*baseline_pTau + (1 | RID),
+  data = df, REML = TRUE
+)
+summary(f_cat)
+
+df %>% distinct(RID, MRS.group) %>% count(MRS.group)
+
+```
+
+# Spaghetti Plot: PHC_MEM by MRS Tertile (3 groups)
+
+```{r spaghetti-3groups, fig.width=8, fig.height=5.5}
+# Keep subjects with non-missing MRS and assign tertiles per RID
+subj_mrs <- df %>%
+  distinct(RID, mrs_z) %>%              # one MRS per subject
+  filter(!is.na(mrs_z)) %>%
+  mutate(
+    MRS_cat_num = ntile(mrs_z, 3),      # 1,2,3 tertiles
+    MRS_cat = factor(MRS_cat_num,
+                     levels = c(1, 2, 3),
+                     labels = c("Low MRS", "Mid MRS", "High MRS"))
+  ) %>%
+  select(RID, MRS_cat)
+
+# Add category to all visits
+df_cat <- df %>%
+  inner_join(subj_mrs, by = "RID")
+
+# Spaghetti plot colored by MRS category
+p <- ggplot(df_cat, aes(x = time, y = PHC_MEM, group = RID, color = MRS_cat)) +
+  geom_line(alpha = 0.35, linewidth = 1.1) +     # thicker spaghetti lines
+  geom_point(alpha = 0.25, size = 1.0) +         # slightly larger points
+  geom_smooth(aes(group = MRS_cat, color = MRS_cat),
+              method = "lm", formula = y ~ x, se = FALSE, linewidth = 1.8) +  # thicker trends
+  labs(
+    title = "PHC_MEM trajectories by MRS tertile with linear trends",
+    x = "Time since baseline (years)",
+    y = "PHC_MEM",
+    color = "MRS category"
+  ) +
+  theme_minimal(base_size = 12)
+
+p
+
+# Save PDF
+ggsave(
+  filename = file.path(out_dir, "PHC_MEM_spaghetti_by_MRS_3groups.pdf"),
+  plot     = p,
+  device   = pdf,
+  width    = 8, height = 5.5, units = "in"
+)
+```
+
+
+# Change-from-Baseline Plot (ΔPHC_MEM)
+
+```{r change-from-baseline, fig.width=8, fig.height=5.5}
+# Start from df_cat which has baseline_MEM.x and baseline_MEM.y
+df_cat2x <- df_cat %>%
+  mutate(baseline_MEM = dplyr::coalesce(baseline_MEM.x, baseline_MEM.y))
+
+# 1) Use only rows with a real baseline and valid time/MEM; compute change
+df_change <- df_cat2x %>%
+  filter(!is.na(baseline_MEM), !is.na(PHC_MEM), !is.na(time)) %>%
+  mutate(dMEM = PHC_MEM - baseline_MEM)
+
+# 2) Add one explicit baseline row per subject: time = 0, Δ = 0
+base_pts <- df_cat2x %>%
+  distinct(RID, MRS_cat, baseline_MEM) %>%
+  filter(!is.na(baseline_MEM)) %>%
+  transmute(RID, MRS_cat, time = 0, dMEM = 0)
+
+# 3) Combine and plot
+df_plot <- bind_rows(df_change, base_pts) %>% arrange(RID, time)
+
+r <- ggplot(df_plot, aes(x = time, y = dMEM, group = RID, color = MRS_cat)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_line(alpha = 0.35, linewidth = 1.1) +
+  geom_point(alpha = 0.25, size = 1.0) +
+  geom_smooth(aes(group = MRS_cat,color = MRS_cat),
+              method = "lm", formula = y ~ x, se = FALSE, linewidth = 1.8) +
+  labs(
+    title = "Change in PHC_MEM from baseline by MRS tertile",
+    x = "Time since baseline (years)",
+    y = "Δ PHC_MEM from baseline",
+    color = "MRS category"
+  ) +
+  theme_minimal(base_size = 12)
+
+r
+
+ggsave(
+  filename = file.path(out_dir, "change_in_PHC_MEM_spaghetti_by_MRS_3groups.pdf"),
+  plot     = r,
+  device   = pdf,
+  width    = 8, height = 5.5, units = "in"
+)
+```
+
+# Baseline Comparisons by MRS
+
+```{r}
+# Helper: first non-missing value
+first_non_na <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) == 0) return(NA)
+  x[1]
+}
+
+# One row per subject (RID) with baseline covariates + max follow-up time (years)
+subject_level <- df %>%
+  group_by(RID) %>%
+  summarise(
+    baseline_age   = first_non_na(baseline_age),
+    PHC_Sex        = first_non_na(as.character(PHC_Sex)),
+    APOE4          = first_non_na(APOE4),
+    PHC_Education  = first_non_na(PHC_Education),
+    baseline_pTau  = first_non_na(baseline_pTau),
+    followup_years = { mx <- suppressWarnings(max(time, na.rm = TRUE));
+                       if (is.infinite(mx)) NA_real_ else mx },
+    .groups = "drop"
+  ) %>%
+  inner_join(subj_mrs, by = "RID") %>%
+  mutate(
+    PHC_Sex = factor(PHC_Sex),
+    APOE4   = factor(APOE4, levels = sort(unique(APOE4)))
+  )
+
+## =========================
+## Continuous (wide, pretty)
+## =========================
+
+cont_vars <- c("baseline_age", "PHC_Education", "baseline_pTau", "followup_years")
+
+cont_long <- subject_level %>%
+  select(MRS_cat, all_of(cont_vars)) %>%
+  pivot_longer(cols = all_of(cont_vars),
+               names_to = "Variable", values_to = "value")
+
+# Kruskal–Wallis p per variable
+kw_df <- cont_long %>%
+  group_by(Variable) %>%
+  summarise(`Kruskal-Wallis p` = tryCatch(
+    kruskal.test(value ~ MRS_cat)$p.value, error = function(e) NA_real_
+  ), .groups = "drop")
+
+# Total N (non-missing across all groups) per variable
+totals_cont <- cont_long %>%
+  group_by(Variable) %>%
+  summarise(`Total N` = sum(!is.na(value)), .groups = "drop")
+
+# Group summaries and pretty string (use actual ±, not \u escapes)
+cont_summ <- cont_long %>%
+  group_by(Variable, MRS_cat) %>%
+  summarise(
+    N      = sum(!is.na(value)),
+    Mean   = mean(value, na.rm = TRUE),
+    SD     = sd(value,   na.rm = TRUE),
+    Median = median(value, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    grp = dplyr::recode(as.character(MRS_cat),
+                        "Low MRS" = "Low", "Mid MRS" = "Mid", "High MRS" = "High"),
+    pretty = sprintf("%.2f ± %.2f (%.2f)", Mean, SD, Median)
+  )
+
+# Wide: one row per variable; columns like "Low N", "Low pretty", etc.
+cont_table_wide <- cont_summ %>%
+  select(Variable, grp, N, pretty) %>%
+  pivot_wider(
+    names_from = grp,
+    values_from = c(N, pretty),
+    names_glue = "{grp} {.value}"
+  ) %>%
+  left_join(totals_cont, by = "Variable") %>%
+  left_join(kw_df,      by = "Variable") %>%
+  relocate(`Total N`, .after = Variable)
+
+# Save & show
+write.csv(cont_table_wide,
+          file = file.path(out_dir, "baseline_group_comparison_continuous_wide.csv"),
+          row.names = FALSE)
+
+kable(cont_table_wide, digits = 3,
+      caption = "Continuous variables by MRS tertile (wide): N and mean±SD (median), with Total N and Kruskal–Wallis p.")
+
+## =========================
+## Categorical (wide, pretty)
+## =========================
+cat_long <- subject_level %>%
+  select(MRS_cat, PHC_Sex, APOE4) %>%
+  pivot_longer(cols = c(PHC_Sex, APOE4),
+               names_to = "Variable", values_to = "Level") %>%
+  mutate(Level = factor(Level))
+
+# Counts/percents within each MRS group
+cat_counts <- cat_long %>%
+  count(Variable, Level, MRS_cat, name = "Count") %>%
+  group_by(Variable, MRS_cat) %>%
+  mutate(Percent = 100 * Count / sum(Count)) %>%
+  ungroup()
+
+# Fisher’s exact p across Low/Mid/High (one p per variable)
+fisher_df <- cat_long %>%
+  group_by(Variable) %>%
+  summarise(`Fisher p` = tryCatch(
+    fisher.test(table(MRS_cat, Level))$p.value, error = function(e) NA_real_
+  ), .groups = "drop")
+
+# Total N across groups per Variable–Level
+totals_cat <- cat_counts %>%
+  group_by(Variable, Level) %>%
+  summarise(`Total N` = sum(Count), .groups = "drop")
+
+# Pretty wide table with n(%) and Total N
+cat_table_wide <- cat_counts %>%
+  mutate(
+    grp = dplyr::recode(as.character(MRS_cat),
+                        "Low MRS" = "Low", "Mid MRS" = "Mid", "High MRS" = "High"),
+    `n(%)` = sprintf("%d (%.1f%%)", Count, Percent)
+  ) %>%
+  select(Variable, Level, grp, `n(%)`) %>%
+  pivot_wider(names_from = grp, values_from = `n(%)`) %>%
+  left_join(totals_cat,  by = c("Variable", "Level")) %>%
+  left_join(fisher_df,   by = "Variable") %>%
+  relocate(`Total N`, .after = Level)
+
+# Add group denominators (Ns) to the categorical wide table
+group_Ns <- cat_long %>%
+  group_by(Variable, MRS_cat) %>%
+  summarise(Group_N = sum(!is.na(Level)), .groups = "drop") %>%
+  mutate(col = dplyr::recode(as.character(MRS_cat),
+                             "Low MRS"="Low_N","Mid MRS"="Mid_N","High MRS"="High_N")) %>%
+  select(-MRS_cat) %>%
+  tidyr::pivot_wider(names_from = col, values_from = Group_N)
+
+cat_table_wide <- cat_table_wide %>%
+  dplyr::left_join(group_Ns, by = "Variable")
+
+# Save & show
+write.csv(cat_table_wide,
+          file = file.path(out_dir, "baseline_group_comparison_categorical_wide.csv"),
+          row.names = FALSE)
+kable(cat_table_wide, digits = 3,
+      caption = "Categorical variables by MRS tertile (wide): n(%) with Total N and Fisher’s exact p.")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
