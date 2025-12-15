@@ -1,0 +1,180 @@
+---
+title: "Evaluate batch-correction using Harman method"
+subtitle: "Using Kruskal Wallis test, checking for keeping sex-effects, and keeping Age-effects"
+author: 
+  - David lukacsovich^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set Up
+
+## Load Libraries
+
+```{r library}
+suppressMessages({
+  library(dplyr)
+  library(ggpubr)
+  library(SummarizedExperiment)
+})
+
+
+base_dir <- "../../.."
+analysis_dir <- file.path(base_dir, "AD_CR")
+data_dir <- file.path(analysis_dir, "data/DNAm_Aplus/processed")
+code_dir <- file.path(analysis_dir, "code", "functions")
+
+source(file.path(code_dir, "run_pca.R"), local = TRUE)
+```
+
+# Define Functions
+
+## Load Data
+
+```{r func_load}
+load_pca_data <- function() {
+  dnam_data <- readRDS(file.path(data_dir, "Batched.RDS"))
+  
+  pca_res <- get_dnam_pca(
+    dnam_data,
+    3,
+    pc_count = 5, 
+    pc_label = "BPC_",
+    outlier_label = "batch_outlier"
+  )
+  
+  dnam_data <- pca_res$dnam_data
+  pca_df <- dnam_data %>%
+    SummarizedExperiment::colData() %>%
+    as.data.frame() %>%
+  dplyr::mutate(
+    age_split_by_tertiles = as.character(.data$age_split_by_tertiles)
+  )
+  
+  pca_df
+}
+
+get_pca_data <- function() {
+  pca_df <- load_pca_data()
+  
+  before_df <- pca_df %>%
+    dplyr::select(
+      "batch",
+      "PC_1" = "NPC_1",
+      "PC_2" = "NPC_2",
+      "PC_3" = "NPC_3",
+      "PC_4" = "NPC_4",
+      "PC_5" = "NPC_5"
+    ) %>%
+    dplyr::mutate(Status = "Normalized")
+  
+  after_df <- pca_df %>%
+    dplyr::select(
+      "batch",
+      "PC_1" = "BPC_1",
+      "PC_2" = "BPC_2",
+      "PC_3" = "BPC_3",
+      "PC_4" = "BPC_4",
+      "PC_5" = "BPC_5"
+    ) %>%
+    dplyr::mutate(Status = "Batched")
+  
+  rbind(before_df, after_df)
+}
+```
+
+## KW test
+
+```{r func_km}
+create_kw_plot <- function(pc_df, pc) {
+  # Perform Kruskal-Wallis Test
+  kw_test_results <- pc_df %>%
+    dplyr::group_by(.data$Status) %>% 
+    rstatix::kruskal_test(data = ., as.formula(paste0(pc, " ~ batch")))
+  
+  # Merge p-values back to the data for plotting
+  
+  ## Determine maximum y value for text positioning
+  max_y <- pc_df %>%
+    dplyr::pull(as.name(pc)) %>%
+    max(na.rm = TRUE)
+  xpos <- length(unique(pc_df$batch)) / 2
+  
+  ## Plot
+  ggpubr::ggboxplot(
+    data = pc_df,
+    x = "batch",
+    y = pc,
+    fill = "Status",
+    title = paste0("Boxplot for ", pc)
+  ) +
+    # Add KW Test Results
+    ggplot2::annotate(
+      "text",
+      label = paste0(
+        "KW test p w/ normalization = ", 
+        signif(
+          kw_test_results$p[kw_test_results$Status == "Normalized"],
+          3
+        ),
+        "\nKW test p w/ batch-correction = ",
+        signif(
+          kw_test_results$p[kw_test_results$Status == "Batched"],
+          3
+        )
+      ),
+      x = xpos,
+      y = max_y + 1, 
+      size = 4
+    ) +
+    ggplot2::theme(axis.text.x = ggplot2::element_blank())
+}
+
+create_kw_plotlist <- function(pc_df, pc_ls) {
+  plyr::llply(
+    pc_ls,
+    .fun = function(pc) {
+      create_kw_plot(pc_df, pc)
+    }
+  )
+}
+```
+
+# Get Data
+
+```{r load}
+pc_df <- get_pca_data()
+```
+
+# Plot KW
+
+```{r plot, fig.width = 18, fig.height = 30}
+kw_ls <- create_kw_plotlist(pc_df, paste0("PC_", 1:5))
+ggpubr::ggarrange(plotlist = kw_ls, ncol = 2, nrow = 3)
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

@@ -1,0 +1,352 @@
+---
+title: "Get correlation between PHC_MEM and DNAm_residual or PHC_pTau"
+author: 
+  - David lukacsovich^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: lumen
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+# Set Up
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Libraries
+
+```{r library}
+suppressMessages({
+  library(dplyr)
+  library(tidyr)
+  library(readr)
+  library(readxl)
+  library(broom)
+  library(stringr)
+  library(ggplot2)
+  library(patchwork)
+  library(tibble)
+})
+
+base_dir <- "../../.."
+analysis_dir <- file.path(base_dir, "AD_CR")
+data_dir <- file.path(analysis_dir, "data/DNAm_Aplus/processed")
+reference_dir <- file.path(analysis_dir, "data/ref_files")
+save_dir <- file.path(
+  analysis_dir, "analysis_results/only_amyloid_positive_2_stage_approach"
+)
+```
+
+# Define Functions
+
+## Get Data
+
+```{r func_read}
+read_phenotype <- function() {
+  pheno_df <- read.csv(
+    file.path(save_dir, "sig_probes/Phenotypes.csv")
+  ) %>%
+    dplyr::filter(.data$PHC_Diagnosis == 2) %>%
+    dplyr::mutate(
+      sex = as.factor(.data$Gender),
+      APOE4 = .data$APOE4
+    )
+  row.names(pheno_df) <- stringr::str_replace_all(pheno_df$sample, "-", ".")
+  
+  pheno_df
+}
+
+read_beta_data <- function(pheno_df) {
+  beta_df <- read.csv(
+    file.path(save_dir, "sig_probes/beta_MCI.csv"), row.names = 1
+  ) * 100
+  beta_df <- beta_df[,row.names(pheno_df)]
+  
+  beta_df
+}
+
+read_dmr_data <- function() {
+  dmr_df <- read.csv(file.path(save_dir, "comb-p-DMRs", "MCI_DMRs.csv")) %>%
+    dplyr::select("DMR", cpg = "cpgs_in_region") %>%
+    tidyr::separate_rows("cpg", sep = ",")
+  
+  dmr_df
+}
+
+get_dmr_scores <- function(beta_df) {
+  dmr_df <- read_dmr_data()
+  beta_df <- beta_df[dmr_df$cpg, ]
+  
+  dmr_df <- limma::avereps(beta_df, ID = dmr_df$DMR)
+  
+  dmr_df
+}
+
+read_data <- function() {
+  pheno_df <- read_phenotype()
+  beta_df <- read_beta_data(pheno_df)
+  dmr_df <- get_dmr_scores(beta_df)
+  
+  list(pheno_df = pheno_df, dmr_df = dmr_df)
+}
+```
+
+## Helpers
+
+```{r func_helper}
+# Extract the DNAm, pTau, and interaction terms from lm()
+lm_terms_summary <- function(fit) {
+  pick_key <- function(term) {
+    has_dnam <- stringr::str_detect(term, "\\bdnam\\b")
+    has_ptau <- stringr::str_detect(term, "\\bPHC_pTau\\b")
+    dplyr::case_when(
+      has_dnam & has_ptau ~ "dnam_PHC_pTau",
+      has_dnam            ~ "dnam",
+      has_ptau            ~ "PHC_pTau",
+      TRUE                ~ NA_character_
+    )
+  }
+  wide <- broom::tidy(fit) %>%
+    dplyr::mutate(term_key = pick_key(term)) %>%
+    dplyr::filter(!is.na(term_key)) %>%
+    dplyr::select(term_key, estimate, std.error, p.value) %>%
+    tidyr::pivot_wider(
+      names_from = term_key,
+      values_from = c(estimate, std.error, p.value),
+      names_glue = "{.value}_{term_key}"
+    )
+
+  target_cols <- c(
+    "estimate_dnam","std.error_dnam","p.value_dnam",
+    "estimate_PHC_pTau","std.error_PHC_pTau","p.value_PHC_pTau",
+    "estimate_dnam_PHC_pTau","std.error_dnam_PHC_pTau","p.value_dnam_PHC_pTau"
+  )
+  for (nm in target_cols) if (!nm %in% names(wide)) wide[[nm]] <- NA_real_
+  wide[, target_cols, drop = FALSE]
+}
+```
+
+# Read Data
+
+```{r read}
+data_ls <- read_data()
+pheno_df <- data_ls$pheno_df
+dmr_df <- data_ls$dmr_df
+```
+
+# Targets & output locations
+
+```{r targets}
+out_dir <- file.path(save_dir, "linear_model_MCI")
+
+pdf_slopes_path <- file.path(out_dir, "Estimated_pTau-Memory_slopes_by_DMR_quartiles_MCI.pdf")
+pdf_assoc_path  <- file.path(out_dir, "Residual_cognition_and_pTau_vs_DMR_MCI.pdf")
+dmr_path        <- file.path(out_dir, "all_assoc_summaries_MCI_sig_intxn_DMRs.csv")
+```
+
+# Build plots & summaries
+
+```{r build-plots, results='hide'}
+plots_slopes <- list()
+assoc_plots  <- list()
+all_assoc_summaries <- NULL
+
+for (dmr in row.names(dmr_df)) {
+  dat_i <- cbind(pheno_df, dnam = as.numeric(dmr_df[dmr, ]))
+
+  qs <- quantile(dat_i$dnam, c(0, .25, .5, .75, 1), na.rm = TRUE)
+  q1_val <- as.numeric(qs[2])  # 25th
+  q3_val <- as.numeric(qs[4])  # 75th
+
+  fit_i <- stats::lm(resid ~ dnam * PHC_pTau, data = dat_i)
+
+  # Grid for predicted lines at Q1/Q3 of DNAm
+  pgrid <- seq(min(dat_i$PHC_pTau, na.rm = TRUE),
+               max(dat_i$PHC_pTau, na.rm = TRUE), length.out = 101)
+  new_q1 <- data.frame(dnam = q1_val, PHC_pTau = pgrid, grp = "Low DMR (Q1)")
+  new_q3 <- data.frame(dnam = q3_val, PHC_pTau = pgrid, grp = "High DMR (Q3)")
+  newdat <- rbind(new_q1, new_q3)
+
+  pr <- predict(fit_i, newdata = newdat, se.fit = TRUE)
+  tval <- qt(0.975, df = df.residual(fit_i))
+
+  plot_df <- cbind(newdat,
+                   fit = as.numeric(pr$fit),
+                   lo  = as.numeric(pr$fit - tval * pr$se.fit),
+                   hi  = as.numeric(pr$fit + tval * pr$se.fit))
+
+  # Slopes plot (short title; DMR in subtitle)
+  p_slopes <- ggplot(plot_df, aes(x = PHC_pTau, y = fit, color = grp, fill = grp)) +
+    geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.15, color = NA) +
+    geom_line(linewidth = 1.1) +
+    labs(
+      title = "Estimated pTau–Memory Slopes by DMR Quartiles",
+      subtitle = paste0("DMR ", dmr),
+      x = "pTau (z-score)",
+      y = "Memory score (residual; covariate-adjusted)",
+      color = "DMR quartile",
+      fill  = "DMR quartile"
+    ) +
+    scale_x_continuous(expand = expansion(mult = 0.05)) +
+    scale_y_continuous(expand = expansion(mult = 0.05)) +
+    coord_cartesian(clip = "off") +
+    theme_classic(base_size = 11) +
+    theme(legend.position = "top",
+          plot.margin = margin(12, 12, 12, 12),
+          plot.title = element_text(face = "bold", size = 12),
+          plot.subtitle = element_text(size = 10))
+  plots_slopes[[length(plots_slopes) + 1]] <- p_slopes
+
+  # Associations (two separate plots stored individually)
+  cor1 <- suppressWarnings(cor.test(dat_i$resid, dat_i$dnam,
+                                    method = "spearman", use = "complete.obs"))
+  p_resid_dnam <- ggplot(dat_i, aes(x = dnam, y = resid)) +
+    geom_point(alpha = 0.6) +
+    geom_smooth(method = "lm", se = TRUE) +
+    labs(
+      title = "Residual cognition vs DMR",
+      subtitle = paste0("DMR ", dmr, "\nSpearman \u03C1 = ",
+                        sprintf("%.2f", as.numeric(cor1$estimate)),
+                        ", p = ", formatC(cor1$p.value, format = "g", digits = 3)),
+      x = "DMR (beta-mean, %)",
+      y = "Memory score (residual; covariate-adjusted)"
+    ) +
+    theme_classic(base_size = 11) +
+    theme(plot.title = element_text(face = "bold", size = 12),
+          plot.subtitle = element_text(size = 9),
+          plot.margin = margin(12, 24, 12, 24))
+
+  cor2 <- suppressWarnings(cor.test(dat_i$PHC_pTau, dat_i$dnam,
+                                    method = "spearman", use = "complete.obs"))
+  p_ptau_dnam <- ggplot(dat_i, aes(x = dnam, y = PHC_pTau)) +
+    geom_point(alpha = 0.6) +
+    geom_smooth(method = "lm", se = TRUE) +
+    labs(
+      title = "pTau vs DMR",
+      subtitle = paste0("DMR ", dmr, "\nSpearman \u03C1 = ",
+                        sprintf("%.2f", as.numeric(cor2$estimate)),
+                        ", p = ", formatC(cor2$p.value, format = "g", digits = 3)),
+      x = "DMR (beta-mean, %)",
+      y = "pTau (z-score)"
+    ) +
+    theme_classic(base_size = 11) +
+    theme(plot.title = element_text(face = "bold", size = 12),
+          plot.subtitle = element_text(size = 9),
+          plot.margin = margin(12, 24, 12, 24))
+
+  assoc_plots[[length(assoc_plots) + 1]] <- p_resid_dnam
+  assoc_plots[[length(assoc_plots) + 1]] <- p_ptau_dnam
+
+  # Summary row with five-number summary
+  assoc_summary <- tibble::tibble(
+    DMR                = dmr,
+    n_resid            = sum(complete.cases(dat_i$resid, dat_i$dnam)),
+    spearman_rho_resid = unname(as.numeric(cor1$estimate)),
+    p_resid            = cor1$p.value,
+    n_pTau             = sum(complete.cases(dat_i$PHC_pTau, dat_i$dnam)),
+    spearman_rho_pTau  = unname(as.numeric(cor2$estimate)),
+    p_pTau             = cor2$p.value,
+    beta_IQR           = IQR(dat_i$dnam, na.rm = TRUE),
+    beta_q0            = unname(qs[1]),
+    beta_q25           = unname(qs[2]),
+    beta_q50           = unname(qs[3]),
+    beta_q75           = unname(qs[4]),
+    beta_q100          = unname(qs[5])
+  ) %>%
+    dplyr::bind_cols(lm_terms_summary(fit_i))
+
+  all_assoc_summaries <- dplyr::bind_rows(all_assoc_summaries, assoc_summary)
+}
+```
+
+# Write PDFs (portrait) with ~1" page margins via per-plot margins
+
+```{r write-pdfs, results='hide'}
+# 72 points ≈ 1 inch
+blank_plot <- ggplot() + theme_void()
+
+# Slopes: 2 per page (portrait)
+if (length(plots_slopes) > 0) {
+  pdf(file = pdf_slopes_path, width = 8.5, height = 11, onefile = TRUE)
+  idx <- seq(1, length(plots_slopes), by = 2)
+  for (i in idx) {
+    end_i <- min(i + 1, length(plots_slopes))
+    page_plots <- plots_slopes[i:end_i]
+    if (length(page_plots) == 1) page_plots[[2]] <- blank_plot
+    # Add ~1" margins to top/left/right (small gap between panels; modest bottom margin)
+    page_plots[[1]] <- page_plots[[1]] + theme(plot.margin = margin(72, 72, 6, 72))
+    page_plots[[2]] <- page_plots[[2]] + theme(plot.margin = margin(6, 72, 36, 72))
+    page <- patchwork::wrap_plots(page_plots, ncol = 1, nrow = 2)
+    print(page)
+  }
+  dev.off()
+} else {
+  message("No slope plots to write.")
+}
+
+# Associations: 4 per page (2×2), with ~1" margin on all outer edges
+if (length(assoc_plots) > 0) {
+  pdf(file = pdf_assoc_path, width = 8.5, height = 11, onefile = TRUE)
+  idx <- seq(1, length(assoc_plots), by = 4)
+  for (i in idx) {
+    end_i <- min(i + 3, length(assoc_plots))
+    page_plots <- assoc_plots[i:end_i]
+    while (length(page_plots) < 4) page_plots[[length(page_plots) + 1]] <- blank_plot
+    # Top-left, top-right, bottom-left, bottom-right
+    page_plots[[1]] <- page_plots[[1]] + theme(plot.margin = margin(72, 6, 6, 72))
+    page_plots[[2]] <- page_plots[[2]] + theme(plot.margin = margin(72, 72, 6, 6))
+    page_plots[[3]] <- page_plots[[3]] + theme(plot.margin = margin(6, 6, 72, 72))
+    page_plots[[4]] <- page_plots[[4]] + theme(plot.margin = margin(6, 72, 72, 6))
+    page <- patchwork::wrap_plots(page_plots, ncol = 2, nrow = 2)
+    print(page)
+  }
+  dev.off()
+} else {
+  message("No association plots to write.")
+}
+```
+
+# Write CSV & diagnostics
+
+```{r write-csv}
+if (is.null(all_assoc_summaries)) {
+  # create empty tibble with correct columns to avoid header-only confusion
+  all_assoc_summaries <- tibble::tibble(
+    DMR = character(),
+    n_resid = integer(),
+    spearman_rho_resid = double(),
+    p_resid = double(),
+    n_pTau = integer(),
+    spearman_rho_pTau = double(),
+    p_pTau = double(),
+    beta_IQR = double(),
+    beta_q0 = double(),
+    beta_q25 = double(),
+    beta_q50 = double(),
+    beta_q75 = double(),
+    beta_q100 = double(),
+    estimate_dnam = double(),
+    std.error_dnam = double(),
+    p.value_dnam = double(),
+    estimate_PHC_pTau = double(),
+    std.error_PHC_pTau = double(),
+    p.value_PHC_pTau = double(),
+    estimate_dnam_PHC_pTau = double(),
+    std.error_dnam_PHC_pTau = double(),
+    p.value_dnam_PHC_pTau = double()
+  )
+}
+readr::write_csv(all_assoc_summaries, dmr_path)
+```

@@ -1,0 +1,257 @@
+---
+title: "Add probes to comb-p results"
+author: 
+  - David lukacsovich^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: lumen
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set Up
+
+## Load Libraries
+
+```{r library}
+suppressMessages({
+  library(dplyr)
+  library(readr)
+  library(IRanges)
+  library(GenomicRanges)
+})
+
+base_dir <- "../../.."
+analysis_dir <- file.path(base_dir, "AD_CR")
+data_dir <- file.path(analysis_dir, "data/combp_education")
+reference_dir <- file.path(analysis_dir, "data/ref_files")
+save_dir <- file.path(
+  analysis_dir, "analysis_results/only_amyloid_positive_2_stage_approach"
+)
+```
+
+# Define Functions
+
+## Get Combp Data
+
+```{r func_load}
+get_combp_inputs <- function() {
+  fname <- file.path(data_dir, "combp_input.bed")
+  
+  combp_df <- read.table(fname, header = TRUE, sep = "\t") %>%
+    dplyr::select("probe", chr = "chrom", "start", "end")
+  
+  combp_df
+}
+
+get_combp_result <- function(label) {
+  fname <- file.path(
+    data_dir, paste0(label, ".regions-t.bed")
+  )
+  
+  combp_df <- readr::read_table(fname) %>%
+    dplyr::rename(chr = "#chrom") %>%
+    as.data.frame() %>%
+    dplyr::mutate(
+      DMR = paste0(.data$chr, ":", .data$start, "-", .data$end)
+    )
+  
+  combp_df
+}
+
+get_probe_annotations <- function(label) {
+  save_name <- file.path(
+    save_dir,
+    paste0("linear_model_", label, "_education"),
+    "PHC_stats_bacon_interact.csv"
+  )
+  
+  res_df <- read.csv(save_name)
+  
+  res_df <- res_df %>%
+    dplyr::mutate(
+      direction = ifelse(.data$estimate_bacon > 0, "+", "-")
+    ) %>%
+    dplyr::select(
+      probe = "CpG",
+      "direction",
+      "UCSC_RefGene_Group",
+      "UCSC_RefGene_Name",
+      "Relation_to_Island"
+    )
+  
+  res_df
+}
+```
+
+## Get GREAT Annotation
+
+```{r func_great}
+get_great_annot <- function(dmr_df) {
+  dmr_gr <- dmr_df %>%
+    GenomicRanges::makeGRangesFromDataFrame(
+      start.field = "start", 
+      end.field = "end", 
+      seqnames.field = "chr"
+    )
+  
+  regionsToGenes_df <- dmr_gr %>%
+    rGREAT::submitGreatJob(genome = "hg38") %>%
+    rGREAT::getRegionGeneAssociations() %>%
+    as.data.frame()
+  
+  GREAT_annotation <- lapply(
+    seq_len(length(regionsToGenes_df$annotated_genes)),
+    function(i) {
+      g <- ifelse(
+        regionsToGenes_df$dist_to_TSS[[i]] > 0,
+        paste0(regionsToGenes_df$annotated_genes[[i]], " (+", regionsToGenes_df$dist_to_TSS[[i]], ")"),
+        paste0(regionsToGenes_df$annotated_genes[[i]], " (", regionsToGenes_df$dist_to_TSS[[i]], ")")
+      )
+      
+      paste0(g, collapse = ";")
+    }
+  )
+  
+  great_df <- regionsToGenes_df %>%
+    dplyr::select("seqnames", "start", "end") %>%
+    dplyr::mutate(GREAT_annotation = unlist(GREAT_annotation))
+  
+  dmr_df <- dmr_df %>%
+    dplyr::left_join(great_df, by = c("chr" = "seqnames", "start", "end"))
+}
+```
+
+## Merge Data
+
+```{r func_merge}
+filter_collapse <- function(annotation_data, collapse = ";") {
+  annotation_data <- annotation_data %>%
+    paste0(collapse = ";") %>%
+    stringr::str_split_1(";") %>%
+    unique() %>%
+    sort()
+  
+  annotation_data <- annotation_data[annotation_data != ""]
+  
+  if (length(annotation_data) == 0) {
+    return("")
+  }
+  
+  paste0(annotation_data, collapse = collapse)
+}
+
+add_probes <- function(input_df, result_df, annot_df) {
+  input_gr <- input_df %>%
+    GenomicRanges::makeGRangesFromDataFrame()
+  
+  result_gr <- result_df %>%
+    GenomicRanges::makeGRangesFromDataFrame()
+  
+  overlap_df <- GenomicRanges::findOverlaps(result_gr, input_gr) %>%
+    as.data.frame()
+  
+  cpg_df <- input_df %>%
+    dplyr::mutate(index = dplyr::row_number()) %>%
+    dplyr::select("probe", "index") %>%
+    dplyr::inner_join(overlap_df, by = c("index" = "subjectHits")) %>%
+    dplyr::left_join(annot_df, by = "probe") %>%
+    dplyr::group_by(.data$queryHits) %>%
+    dplyr::summarise(
+      direction = paste0(.data$direction, collapse = ""),
+      cpgs_in_region = paste0(.data$probe, collapse = ","),
+      UCSC_RefGene_Group = filter_collapse(.data$UCSC_RefGene_Group, collapse = ";"),
+      UCSC_RefGene_Name = filter_collapse(.data$UCSC_RefGene_Name, collapse = ";"),
+      Relation_to_Island = filter_collapse(.data$Relation_to_Island, collapse = ";")
+    ) %>%
+    dplyr::ungroup()
+  
+  result_df <- result_df %>%
+    dplyr::mutate(index = dplyr::row_number()) %>%
+    dplyr::left_join(cpg_df, by = c("index" = "queryHits")) %>%
+    dplyr::select(-"index") %>%
+    dplyr::select(
+      "DMR",
+      "n_probes",
+      `P-value` = "z_p",
+      `Sidak-P` = "z_sidak_p",
+      "direction",
+      "cpgs_in_region",
+      "UCSC_RefGene_Group",
+      "UCSC_RefGene_Name",
+      "Relation_to_Island",
+      "GREAT_annotation"
+    )
+  
+  result_df
+}
+```
+
+## Wrapper Functions
+
+```{r func_wrapper}
+get_direction_count <- function(direction) {
+  count <- stringr::str_split(direction, "")[[1]] %>%
+    unique() %>%
+    length()
+  
+  count
+}
+
+combp_wrapper <- function(label) {
+  input_df <- get_combp_inputs()
+  result_df <- get_combp_result(label) %>%
+    get_great_annot()
+  annot_df <- get_probe_annotations(label)
+  dmr_df <- add_probes(input_df, result_df, annot_df)
+  
+  dmr_df <- dmr_df %>%
+    dplyr::filter(.data$n_probes >= 3) %>%
+    # dplyr::filter(.data$`Sidak-P` < 0.05) %>%
+    dplyr::mutate(
+      uni_dir = sapply(
+        .data$direction, function(x) {
+          paste0(unique(stringr::str_split(x, "")[[1]]), collapse = "")
+        }
+      )
+    ) %>%
+    dplyr::filter(nchar(.data$uni_dir) == 1) %>%
+    dplyr::select(-"uni_dir")
+  
+  write.csv(
+    dmr_df,
+    file = file.path(save_dir, "comb-p-DMRs_smoking", paste0(label, "_DMRs.csv")),
+    row.names = FALSE
+  )
+}
+```
+
+# Add Probes to DMRs
+
+```{r run_wrapper}
+combp_wrapper("CN")
+combp_wrapper("MCI")
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

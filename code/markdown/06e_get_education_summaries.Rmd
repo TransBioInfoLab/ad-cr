@@ -1,0 +1,162 @@
+---
+title: "Get statistics for probes and DMRs correcting for education"
+author: 
+  - David lukacsovich^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: lumen
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set Up
+
+## Load Libraries
+
+```{r library}
+suppressMessages({
+  library(dplyr)
+})
+
+base_dir <- "../../.."
+analysis_dir <- file.path(base_dir, "AD_CR")
+data_dir <- file.path(analysis_dir, "data/combp_education")
+reference_dir <- file.path(analysis_dir, "data/ref_files")
+save_dir <- file.path(
+  analysis_dir, "analysis_results/only_amyloid_positive_2_stage_approach"
+)
+```
+
+# Get Smoking Statistics
+
+```{r}
+cpg_df <- read.csv(
+  file.path(
+    save_dir,
+    "linear_model_MCI_education",
+    "PHC_stats_bacon_interact.csv"
+  )
+)
+
+dmr_df <- read.csv(
+  file.path(save_dir, "comb-p-DMRs_smoking", "MCI_DMRs.csv")
+)
+```
+
+# Filter to Target CpGs
+
+```{r}
+cpgs <- c("cg01602139", "cg03281038", "cg08579041", "cg11145222", "cg24481207", "cg26869675")
+
+cpg_df <- cpg_df[match(cpgs, cpg_df$CpG), ]
+cpg_df %>%
+  dplyr::select("estimate_bacon", "std_error_bacon", "pvalue_bacon") %>%
+  dplyr::mutate(
+    estimate_bacon = .data$estimate_bacon / 100,
+    std_error_bacon = .data$std_error_bacon / 100
+  ) %>%
+  as_tibble()
+```
+
+# Filter to Target DMRs
+
+```{r}
+dmrs <- c(
+  "chr19:50983852-50984249",
+  "chr6:32095996-32096480",
+  "chr5:110726641-110727135",
+  "chr4:183987356-183987864",
+  "chr6:7468547-7468818",
+  "chr13:75870661-75870928",
+  "chr8:142778252-142778573",
+  "chr10:132142481-132142678",
+  "chr14:73246028-73246258",
+  "chr5:14870484-14870639",
+  "chr11:18411952-18412200"
+)
+
+dmr_df[match(dmrs, dmr_df$DMR), ] %>%
+  dplyr::select("n_probes", "P.value", "Sidak.P", "direction") %>%
+  tibble::as_tibble()
+```
+
+# Handle Missing DMR
+
+```{r}
+dmr <- dmrs[!(dmrs %in% dmr_df$DMR)]
+
+sig_df <- data.frame(DMR = dmr) %>%
+  tidyr::separate(.data$DMR, into = c("chr", "position"), sep = ":", remove = FALSE) %>%
+  tidyr::separate(.data$position, into = c("start", "end"), sep = "-", remove = TRUE, convert = TRUE) %>%
+  dplyr::mutate(index = dplyr::row_number())
+
+sig_gr <- GenomicRanges::makeGRangesFromDataFrame(sig_df)
+
+pos_df <- dmr_df %>%
+  dplyr::select("DMR") %>%
+  tidyr::separate(.data$DMR, into = c("chr", "position"), sep = ":", remove = FALSE) %>%
+  tidyr::separate(.data$position, into = c("start", "end"), sep = "-", remove = TRUE, convert = TRUE) %>%
+  dplyr::mutate(index = dplyr::row_number())
+
+pos_gr <- GenomicRanges::makeGRangesFromDataFrame(pos_df)
+
+overlap_df <- GenomicRanges::findOverlaps(sig_gr, pos_gr) %>%
+  data.frame()
+
+map_df <- sig_df %>%
+  dplyr::select(orig_DMR = "DMR", "index") %>%
+  dplyr::left_join(overlap_df, by = c("index" = "queryHits")) %>%
+  dplyr::select(-"index") %>%
+  dplyr::left_join(
+    pos_df %>% dplyr::select("DMR", "index"),
+    by = c("subjectHits" = "index")
+  ) %>%
+  dplyr::select(-"subjectHits") %>%
+  dplyr::left_join(dmr_df, by = "DMR") %>%
+  dplyr::select("orig_DMR", "DMR", "n_probes", "P.value", "Sidak.P", "direction")
+
+map_df %>% tibble::as_tibble()
+```
+
+# Check non-Significant DMR
+
+```{r}
+cpg_df <- read.csv(
+  file.path(
+    save_dir,
+    "linear_model_MCI_education",
+    "PHC_stats_bacon_interact.csv"
+  )
+)
+
+int_df <- cpg_df %>%
+  dplyr::filter(.data$Chr == "chr13") %>%
+  dplyr::filter(.data$Position >= 75870661 & .data$Position <= 75870928) %>%
+  dplyr::select("CpG", "Chr", "Position", "estimate_bacon", "std_error_bacon", "pvalue_bacon", "fdr_bacon")
+
+int_df
+```
+
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

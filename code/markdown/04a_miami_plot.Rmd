@@ -1,0 +1,353 @@
+---
+title: "Create Miami Plot comparing CN vs MCI"
+author:
+  - David Lukacsovich^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  rmarkdown::html_document:
+    highlight: breezedark
+    theme: lumen
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set Up
+
+## Load Libraries
+
+```{r library}
+suppressMessages({
+  library(dplyr)
+  library(miamiplot)
+  library(ggplot2)
+  library(ggrepel)
+})
+
+base_dir <- "../../.."
+analysis_dir <- file.path(base_dir, "AD_CR")
+data_dir <- file.path(analysis_dir, "data/DNAm_Aplus/processed")
+reference_dir <- file.path(analysis_dir, "data/ref_files")
+save_dir <- file.path(
+  analysis_dir, "analysis_results/only_amyloid_positive_2_stage_approach"
+)
+plot_dir <- file.path(save_dir, "plots")
+```
+
+# Define Functions
+
+## Load Data
+
+```{r}
+fix_gene <- function(genes, refgenes) {
+  genes <- genes %>%
+    stringr::str_split_i(pattern = ";", i = 1) %>%
+    stringr::str_split_i(pattern = " ", i = 1)
+  
+  is_ens <- stringr::str_starts(genes, "ENS")
+  genes <- ifelse(is_ens, refgenes, genes)
+  
+  genes
+}
+
+get_promoter <- function(genes) {
+  genes <- genes %>%
+    stringr::str_split_i(pattern = ";", i = 1)
+  
+  promoter <- genes %>%
+    stringr::str_split_i(pattern = " ", i = 2) %>%
+    stringr::str_remove_all("[()]") %>%
+    as.numeric()
+  
+  promoter
+}
+
+get_cpg_data <- function(label) {
+  stats_df <- read.csv(
+    file.path(
+      save_dir,
+      paste0("linear_model_", label),
+      "PHC_stats_bacon_interact.csv"
+    )
+  )
+  
+  plot_df <- stats_df %>%
+    dplyr::select(
+      cpg = "CpG",
+      chr = "Chr",
+      pos = "Position", 
+      great_gene = "GREAT_annotation",
+      gene = "UCSC_RefGene_Name",
+      refgene = "UCSC_RefGene_Name",
+      pval = "pvalue_bacon",
+      "IQR"
+    ) %>%
+    dplyr::mutate(
+      category = label,
+      to_label = round(.data$IQR, digits = 2) > 1.99 & .data$pval <= 1e-5
+    ) %>%
+    dplyr::mutate(gene = fix_gene(.data$gene, .data$refgene)) %>%
+    dplyr::mutate(gene = ifelse(.data$to_label, .data$gene, "")) %>%
+    dplyr::mutate(chr = as.integer(stringr::str_remove(.data$chr, "chr"))) %>%
+    dplyr::select(-"IQR")
+  
+  plot_df
+}
+
+get_dmr_data <- function(label, cpg_df) {
+  stats_df <- read.csv(
+    file.path(
+      save_dir,
+      "comb-p-DMRs",
+      paste0(label, "_DMRs.csv")
+    )
+  )
+  
+  dmr_df <- stats_df %>%
+    dplyr::select("DMR", "cpgs_in_region") %>%
+    tidyr::separate_rows("cpgs_in_region", sep = ",") %>%
+    dplyr::rename(cpg = "cpgs_in_region") %>%
+    dplyr::left_join(
+      cpg_df %>%
+        dplyr::select("cpg", "pval")
+    ) %>%
+    dplyr::arrange(.data$pval) %>%
+    dplyr::group_by(.data$DMR) %>%
+    dplyr::filter(dplyr::row_number() == 1) %>%
+    dplyr::ungroup()
+  
+  plot_df <- stats_df %>%
+    dplyr::mutate(name = .data$DMR) %>%
+    tidyr::separate(
+      col = "DMR",
+      into = c("chr", "range"),
+      sep = ":"
+    ) %>%
+    tidyr::separate(
+      col = "range",
+      into = c("start", "end"),
+      sep = "-"
+    ) %>%
+    dplyr::mutate(
+      pos = as.integer((as.numeric(.data$start) + as.numeric(.data$end)) / 2)
+    ) %>%
+    dplyr::select(
+      "name",
+      "chr",
+      "pos", 
+      great_gene = "GREAT_annotation",
+      gene = "UCSC_RefGene_Name",
+      refgene = "UCSC_RefGene_Name"
+      # porig = "P.value"
+    ) %>%
+    dplyr::left_join(dmr_df, by = c("name" = "DMR")) %>%
+    dplyr::mutate(
+      category = label
+    ) %>%
+    dplyr::mutate(
+      promoter = get_promoter(.data$great_gene),
+      to_label = abs(.data$promoter) < 2000
+    ) %>%
+    dplyr::mutate(gene = fix_gene(.data$gene, .data$refgene)) %>%
+    dplyr::mutate(gene = ifelse(.data$to_label, .data$gene, "")) %>%
+    dplyr::mutate(chr = as.integer(stringr::str_remove(.data$chr, "chr"))) %>%
+    dplyr::select(-"promoter") %>%
+    dplyr::select(-"cpg")
+  
+  plot_df
+}
+
+get_category_data <- function(label, max_pval = 0.1) {
+  cpg_df <- get_cpg_data(label = label)
+  dmr_df <- get_dmr_data(label = label, cpg_df = cpg_df)
+  
+  plot_df <- rbind(
+    cpg_df %>%
+      dplyr::rename(name = "cpg"),
+    dmr_df
+  ) %>%
+    dplyr::filter(.data$pval < max_pval)
+  
+  plot_df
+}
+
+get_plot_data <- function(max_pval = 0.1) {
+  cn_df <- get_category_data("CN", max_pval = max_pval)
+  mci_df <- get_category_data("MCI", max_pval = max_pval)
+  
+  plot_df <- rbind(cn_df, mci_df)
+  
+  plot_df
+}
+```
+
+## Manhattan Plot
+
+```{r func_manhattan}
+get_manhattan_plot_data <- function(plot_df) {
+  plot_df <- plot_df %>%
+    dplyr::filter(.data$category == "MCI") %>%
+    dplyr::mutate(pos = .data$pos / 1e4) %>%
+    dplyr::arrange(.data$chr, .data$pos)
+  
+  man_df <- plot_df %>%
+    dplyr::group_by(.data$chr) %>%
+    dplyr::summarise(chr_len = max(.data$pos)) %>%
+    dplyr::mutate(tot = cumsum(.data$chr_len) - .data$chr_len) %>%
+    dplyr::select(-"chr_len") %>%
+    dplyr::left_join(plot_df, by = "chr") %>%
+    dplyr::arrange(.data$chr, .data$pos) %>%
+    mutate(pos_cum = .data$pos + .data$tot) %>%
+    mutate(is_annotate = .data$to_label)
+  
+  axis_df <- man_df %>%
+    dplyr::group_by(.data$chr) %>%
+    dplyr::summarize(center = (max(.data$pos_cum) + min(.data$pos_cum)) / 2) %>%
+    dplyr::ungroup()
+  
+  list(man_df = man_df, axis_df = axis_df)
+}
+
+create_manhattan_plot <- function(man_df, axis_df) {
+  ggplot2::ggplot(man_df, ggplot2::aes(x = pos_cum, y = -log10(pval))) +
+    ggplot2::geom_point(
+      ggplot2::aes(color = as.factor(.data$chr)),
+      alpha = 0.8,
+      size = 1.3
+    ) +
+    ggplot2::geom_hline(yintercept = 5, col = "red") +
+    ggplot2::scale_color_manual(values = rep(c("blue", "black"), 22)) +
+    ggplot2::scale_x_continuous(
+      label = axis_df$chr,
+      breaks = axis_df$center,
+      expand = c(0.02, 0.05)
+    ) +
+    ggplot2::scale_y_continuous(expand = c(0, 0.2)) +
+    ggrepel::geom_label_repel(
+      data = man_df %>%
+        dplyr::filter(.data$to_label),
+      mapping = ggplot2::aes(label = gene),
+      size = 3
+    ) +
+    ggplot2::theme_bw() +
+    ggplot2::theme( 
+      legend.position = "none",
+      axis.line = ggplot2::element_line(colour = "black"),
+      panel.grid.major = ggplot2::element_blank(),
+      panel.grid.minor = ggplot2::element_blank(),
+      panel.border = ggplot2::element_blank(),
+      panel.background = ggplot2::element_blank()
+    ) +
+    ggplot2::xlab("Chromosome") +
+    ggplot2::ylab(expression(-log[10](italic(p))))  
+}
+
+plot_manhattan <- function(plot_df) {
+  axis_ls <- get_manhattan_plot_data(plot_df)
+  
+  create_manhattan_plot(axis_ls$man_df, axis_ls$axis_df)
+}
+```
+
+
+# Read Data
+
+```{r load}
+plot_df <- get_plot_data()
+```
+
+# Miami Plot
+
+## Prepare Miami Plot Data
+
+```{r prepare_plot}
+plot_data <- miamiplot::prep_miami_data(
+  data = plot_df,
+  split_by = "category",
+  split_at = "CN",
+  p = "pval"
+)
+
+cn_labels <- plot_data$upper %>%
+  dplyr::filter(.data$to_label) %>%
+  dplyr::select("rel_pos", "logged_p", label = "gene")
+mci_labels <- plot_data$lower %>%
+  dplyr::filter(.data$to_label) %>%
+  dplyr::select("rel_pos", "logged_p", label = "gene")
+```
+
+## Plot
+
+```{r plot}
+miamiplot::ggmiami(
+  data = plot_df,
+  split_by = "category",
+  split_at = "CN",
+  p = "pval", 
+  upper_ylab = "Cognitive Normal",
+  lower_ylab = "Mild Cognitive Impairment",
+  upper_labels_df = cn_labels,
+  lower_labels_df = mci_labels,
+  suggestive_line = 1e-5,
+  suggestive_line_color = "red",
+  genome_line = NULL
+)
+```
+
+## Save Plot
+
+```{r save}
+pdf(file.path(plot_dir, "miami_plot_cpg.pdf"), width = 8, height = 6)
+
+miamiplot::ggmiami(
+  data = plot_df,
+  split_by = "category",
+  split_at = "CN",
+  p = "pval", 
+  upper_ylab = "Cognitive Normal",
+  lower_ylab = "Mild Cognitive Impairment",
+  upper_labels_df = cn_labels,
+  lower_labels_df = mci_labels,
+  suggestive_line = 1e-5,
+  suggestive_line_color = "red",
+  genome_line = NULL
+)
+
+dev.off()
+```
+
+# Manhattan Plot
+
+## Plot
+
+```{r plot_manhattan}
+plot_manhattan(plot_df)
+```
+
+## Save
+
+```{r save_manhattan}
+pdf(file.path(plot_dir, "manhattan_plot_cpg.pdf"), width = 8, height = 6)
+plot_manhattan(plot_df)
+dev.off()
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

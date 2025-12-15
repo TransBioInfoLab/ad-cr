@@ -1,0 +1,113 @@
+---
+title: "Get list of triple Aplus samples"
+author: 
+  - David lukacsovich^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+# Set Up
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Libraries
+
+```{r library}
+suppressMessages({
+  library(dplyr)
+  library(readxl)
+})
+
+base_dir <- "../../.."
+analysis_dir <- file.path(base_dir, "DATASET", "ADNI")
+pheno_dir <- file.path(analysis_dir, "Phenotype", "raw")
+
+cr_dir <- file.path(base_dir, "AD_CR")
+rep_dir <- file.path(cr_dir, "data/DNAm/phenotype")
+```
+
+# Read Data
+
+```{r load}
+pheno_df <- readxl::read_excel(
+  file.path(pheno_dir, "ADNI_DNA_Methylation_SampleAnnotation_20170530.xlsx"),
+  na = c("", "NA", "N/A")
+) %>%
+  dplyr::distinct(.data$RID, .data$DateDrawn, .keep_all = TRUE) %>%
+  dplyr::mutate(
+    DateDrawn = as.Date(.data$DateDrawn),
+    Edate = as.Date(.data$Edate),
+  )
+
+biom_df <- read.csv(
+  file.path(pheno_dir, "ADSP-PHC_8-2025/ADSP_PHC_BIOMARKER_22Aug2025.csv")
+) %>%
+  dplyr::mutate(
+    DRAWDATE = as.Date(.data$DRAWDATE)
+  )
+
+cog_df <- read.csv(
+  file.path(pheno_dir, "ADSP-PHC_8-2025/ADSP_PHC_COGN_22Aug2025.csv")
+) %>%
+  dplyr::select(
+    "PHASE", "RID", "VISCODE2", "PHC_MEM", "PHC_EXF", "PHC_LAN", "PHC_VSP"
+  )
+
+pheno_df <- pheno_df %>%
+  dplyr::inner_join(
+    biom_df,
+    by = c("Phase" = "PHASE", "RID", "DateDrawn" = "DRAWDATE")
+  ) %>%
+  dplyr::inner_join(cog_df, by = c("Phase" = "PHASE", "RID", "VISCODE2"))
+```
+
+# Filter Data
+
+```{r filter}
+pheno_df <- pheno_df %>%
+  dplyr::filter(.data$PHC_Ethnicity == 2, .data$PHC_Race == 5)
+
+print("PHC_DIAGNOSIS: 1 = Normal cognition; 2 = Mild cognitive impairment; 3 = AD")
+table(pheno_df$PHC_Diagnosis) 
+print(paste0(nrow(pheno_df), " total samples"))
+
+pheno_df <- pheno_df %>%
+  dplyr::filter(.data$AT_class %in% c("A+T+", "A+T-"))
+print("PHC_DIAGNOSIS: 1 = Normal cognition; 2 = Mild cognitive impairment; 3 = AD")
+table(pheno_df$PHC_Diagnosis) 
+print(paste0(nrow(pheno_df), " samples with A+ condition"))
+```
+
+# Save
+
+```{r save}
+write.csv(
+  pheno_df,
+  file = file.path(rep_dir, "dnam_cog_Aplus.csv"),
+  row.names = FALSE
+)
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

@@ -1,0 +1,167 @@
+---
+title: "Get beta-values for significant probes"
+author: 
+  - David lukacsovich^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: lumen
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set Up
+
+## Load Libraries
+
+```{r library}
+suppressMessages({
+  library(dplyr)
+  library(SummarizedExperiment)
+  library(readxl)
+})
+
+base_dir <- "../../.."
+analysis_dir <- file.path(base_dir, "AD_CR")
+data_dir <- file.path(analysis_dir, "data/DNAm_Aplus/processed")
+reference_dir <- file.path(analysis_dir, "data/ref_files")
+save_dir <- file.path(
+  analysis_dir, "analysis_results/only_amyloid_positive_2_stage_approach"
+)
+draft_dir <- file.path(analysis_dir, "DRAFT-FIGURES-TABLES_9-15-2025")
+```
+
+# Define Functions
+
+## Get Data
+
+```{r func_load}
+get_dnam_data <- function() {
+  dnam_data <- readRDS(file.path(data_dir, "Batched_PCA.RDS"))
+  
+  dnam_data
+}
+
+get_pheno_df <- function(labels = c("CN", "MCI", "AD")) {
+  pheno_df <- plyr::ldply(
+    .data = labels,
+    .fun = function(label) {
+      read.csv(
+        file.path(save_dir, paste0("linear_model_", label), "Phenotypes.csv")
+      )
+    }
+  )
+  
+  pheno_df
+}
+
+get_data <- function(labels = c("CN", "MCI", "AD")) {
+  dnam_data <- get_dnam_data()
+  pheno_df <- get_pheno_df(labels = labels)
+  
+  dnam_data <- dnam_data[,pheno_df$sample]
+  dnam_data$resid <- pheno_df$resid
+  
+  dnam_data
+}
+```
+
+## Get Target Probes
+
+```{r func_probes}
+get_sig_probes <- function() {
+  probes <- readxl::read_excel(
+    file.path(draft_dir, "sig_CpGs_intxn_term_only_10-9-2025.xlsx")
+  ) %>%
+    dplyr::pull("CpG")
+  
+  probes
+}
+
+get_mqtl_probes <- function(label) {
+  probes <- read.csv(
+    file.path(save_dir, "comb-p-DMRs", paste0(label, "_mQTLs_inputs.csv"))
+  ) %>%
+    dplyr::pull("cpgs")
+  
+  probes
+}
+```
+
+## Save Data
+
+```{r func_save}
+save_data <- function(dnam_data, probes, label = "") {
+  dnam_data <- subset(dnam_data, row.names(dnam_data) %in% probes)
+  
+  pheno_df <- dnam_data %>%
+    SummarizedExperiment::colData() %>%
+    as.data.frame()
+  
+  beta_data <- SummarizedExperiment::assays(dnam_data)$dnam
+  
+  write.csv(
+    pheno_df,
+    file = file.path(
+      save_dir, "sig_probes", paste0("Phenotypes", label, ".csv")
+    ),
+    row.names = FALSE
+  )
+  
+  write.csv(
+    beta_data,
+    file = file.path(
+      save_dir, "sig_probes", paste0("beta", label, ".csv")
+    ),
+    row.names = TRUE
+  )
+}
+```
+
+# Run Analysis
+
+## Significant Probes
+
+```{r signif}
+dnam_data <- get_data()
+sig_probes <- get_sig_probes()
+save_data(dnam_data, sig_probes, label = "")
+```
+
+## CN Probes
+
+```{r cn}
+dnam_data <- get_data(labels = "CN")
+sig_probes <- get_mqtl_probes("CN")
+save_data(dnam_data, sig_probes, label = "_CN")
+```
+
+## MCI Probes
+
+```{r mci}
+dnam_data <- get_data(labels = "MCI")
+sig_probes <- get_mqtl_probes("MCI")
+save_data(dnam_data, sig_probes, label = "_MCI")
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

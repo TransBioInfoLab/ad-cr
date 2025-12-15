@@ -1,0 +1,153 @@
+---
+title: "Normalize imputed values of autosomal probes"
+subtitle: "We only run BMIQ normalization, without prior quantile normalization"
+author: 
+  - David lukacsovich^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: lumen
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set Up
+
+## Load Libraries
+
+```{r library}
+suppressMessages({
+  library(dplyr)
+  library(wateRmelon)
+  library(SummarizedExperiment)
+  library(parallel)
+  library(doParallel)
+  library(EpiDISH)
+})
+
+base_dir <- "../../.."
+analysis_dir <- file.path(base_dir, "AD_CR")
+data_dir <- file.path(analysis_dir, "data/DNAm_Aplus/processed")
+code_dir <- file.path(analysis_dir, "code", "functions")
+ref_dir <- file.path(analysis_dir, "code", "DNAm-based-age-predictor-master")
+
+source(file.path(code_dir, "bmiq_adjust.R"), local = TRUE)
+source(file.path(code_dir, "bmiq_repeat.R"), local = TRUE)
+source(file.path(ref_dir, "pred_adjusted2.R"))
+```
+
+## Load Data
+
+```{r load}
+dnam_data <- readRDS(file.path(data_dir, "Imputed_Autosomal.RDS"))
+dnam_data$age_split_by_tertiles <- ntile(dnam_data$age_at_visit, 3)
+probe_df <- dnam_data %>%
+  SummarizedExperiment::rowData() %>%
+  as.data.frame()
+pheno_df <- dnam_data %>%
+  SummarizedExperiment::colData() %>%
+  as.data.frame()
+beta_data <- SummarizedExperiment::assays(dnam_data)$dnam
+```
+
+# Run BMIQ Normalization
+
+## Plot Pre-Normalized Distribution
+
+```{r plot_raw}
+probe_type <- ifelse(probe_df$type12 == "I", 1, 2)
+sm::sm.density.compare(
+  beta_data[,1],
+  probe_type
+)
+```
+
+## Run BMIQ
+
+```{r bmiq_run}
+beta_data <- multistep_bmiq(
+  beta_data,
+  probe_df,
+  seeds = c(1, 2, 4, 8, 16, 32, 64),
+  cores = 16
+)
+```
+
+## Plot Normalization Effect
+
+```{r plot_normed}
+probe_type <- ifelse(probe_df$type12 == "I", 1, 2)
+sm::sm.density.compare(
+  beta_data[,1],
+  probe_type
+)
+```
+
+# Gather
+
+## Create SE
+
+```{r create_se}
+dnam_data <- SummarizedExperiment::SummarizedExperiment(
+  assays = list(dnam = beta_data),
+  rowData = probe_df,
+  colData = pheno_df
+)
+```
+
+## Get Age Prediction
+
+```{r pred_age}
+beta_data <- SummarizedExperiment::assays(dnam_data)$dnam
+
+age_df <- predict_age(beta_data, ref_dir)
+dnam_data$pred_age <- age_df$ent_age
+dnam_data$age_split_by_tertiles <- ntile(dnam_data$pred_age, 3)
+```
+
+## Get Celltype Ratios
+
+```{r pred_celltype}
+data(centDHSbloodDMC.m)
+out.l <- EpiDISH::epidish(beta_data, centDHSbloodDMC.m, method = "RPC")
+frac.m <- data.frame(out.l$estF)
+
+dnam_data$B <- frac.m$B
+dnam_data$NK <- frac.m$NK
+dnam_data$CD4T <- frac.m$CD4T
+dnam_data$CD8T <- frac.m$CD8T
+dnam_data$Mono <- frac.m$Mono
+dnam_data$Neutro <- frac.m$Neutro
+dnam_data$Eosino <- frac.m$Eosino
+```
+
+# Save
+
+## Save
+
+```{r save_save}
+saveRDS(dnam_data, file.path(data_dir, "Autosomal.RDS"))
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>
+

@@ -1,0 +1,156 @@
+---
+title: "Prepare significance results for input into Comb-p"
+author: 
+  - David lukacsovich^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: lumen
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set Up
+
+## Load Libraries
+
+```{r library}
+suppressMessages({
+  library(dplyr)
+})
+
+base_dir <- "../../.."
+analysis_dir <- file.path(base_dir, "AD_CR")
+data_dir <- file.path(analysis_dir, "data/combp")
+reference_dir <- file.path(analysis_dir, "data/ref_files")
+save_dir <- file.path(
+  analysis_dir, "analysis_results/only_amyloid_positive_2_stage_approach"
+)
+```
+
+# Define Functions
+
+## Get Combp Data
+
+```{r func_count}
+get_save_directory <- function(save_label = "") {
+  save_dir <- file.path(save_dir, "linear_model")
+  if (nchar(save_label) > 0) {
+    save_dir <- paste(save_dir, save_label, sep = "_")
+  }
+  
+  save_dir
+}
+
+get_interaction_results <- function(parameter, save_label) {
+  final_dir <- get_save_directory(save_label = save_label)
+  save_name <- paste0("PHC_stats_bacon_", parameter, ".csv")
+  
+  stats_df <- read.csv(file.path(final_dir, save_name)) %>%
+    dplyr::select(
+      probe = "CpG",
+      chrom = "Chr",
+      start = "Position",
+      end = "Position",
+      "pvalue_bacon"
+    )
+  
+  colnames(stats_df) <- c("probe", "chrom", "start", "end", parameter)
+  
+  stats_df
+}
+
+save_results <- function(stats_df) {
+  write.table(
+    stats_df,
+    file = file.path(data_dir, "combp_input.bed"),
+    row.names = FALSE,
+    col.names = TRUE,
+    quote = FALSE,
+    sep = "\t" 
+  )
+}
+
+get_category_command <- function(parameter) {
+  if (parameter == "CN") {
+    p_col = 4
+  } else if (parameter == "MCI") {
+    p_col = 5
+  } else {
+    p_col = 6
+  }
+  paste0(
+    "comb-p pipeline --seed 0.05 -p ",
+    parameter,
+    " -c ", p_col, " --dist 750 combp_input.bed"
+  )
+}
+
+get_commands <- function(save_label) {
+  commands <- c(
+    "#!/bin/bash",
+    "",
+    get_category_command("CN"),
+    get_category_command("MCI"),
+    get_category_command("AD")
+  )
+  
+  commands
+}
+
+get_combp_stats <- function() {
+  cn_df <- get_interaction_results("interact", save_label = "CN")
+  mci_df <- get_interaction_results("interact", save_label = "MCI")
+  ad_df <- get_interaction_results("interact", save_label = "AD")
+  
+  mci_df <- mci_df[match(cn_df$probe, mci_df$probe),]
+  cn_df$mci <- mci_df$interact
+  cn_df$ad <- ad_df$interact
+  stats_df <- cn_df %>%
+    dplyr::select("chrom", "start", "end", cn = "interact", "mci", "ad", "probe") %>%
+    dplyr::filter(!(.data$chrom %in% c("chrX", "chrY"))) %>%
+    dplyr::arrange(.data$chrom, .data$start)
+  
+  stats_df
+}
+
+compile_combp_data <- function() {
+  stats_df <- get_combp_stats()
+  save_results(stats_df)
+  
+  commands <- get_commands()
+  file_connection <- file(file.path(data_dir, "combp_commands.sh"), "w")
+  for (item in commands) {
+    writeLines(item, file_connection)
+  }
+  close(file_connection)
+}
+```
+
+# Create Commands
+
+```{r run}
+compile_combp_data()
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

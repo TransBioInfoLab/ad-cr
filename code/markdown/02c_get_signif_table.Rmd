@@ -1,0 +1,148 @@
+---
+title: "Get signif counts in correlation tests"
+author: 
+  - David lukacsovich^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: lumen
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set Up
+
+## Load Libraries
+
+```{r library}
+suppressMessages({
+  library(dplyr)
+})
+
+base_dir <- "../../.."
+analysis_dir <- file.path(base_dir, "AD_CR")
+data_dir <- file.path(analysis_dir, "data/DNAm_Aplus/processed")
+reference_dir <- file.path(analysis_dir, "data/ref_files")
+save_dir <- file.path(
+  analysis_dir, "analysis_results/only_amyloid_positive_2_stage_approach"
+)
+```
+
+# Define Functions
+
+## Get Model Counts
+
+```{r func_count}
+get_save_directory <- function(save_label = "") {
+  save_dir <- file.path(save_dir, "linear_model")
+  if (nchar(save_label) > 0) {
+    save_dir <- paste(save_dir, save_label, sep = "_")
+  }
+  
+  save_dir
+}
+
+get_interaction_counts <- function(save_dir, parameter) {
+  save_name <- paste0("PHC_stats_bacon_", parameter, ".csv")
+  
+  stats_df <- read.csv(file.path(save_dir, save_name))
+  
+  list(
+    pcount = sum(stats_df$pvalue_bacon < 1e-5),
+    fcount = sum(stats_df$fdr_bacon < 0.05)
+  )
+}
+
+get_directory_count <- function(save_label = "") {
+  save_dir <- get_save_directory(save_label = save_label)
+  if (nchar(save_label) == 0) {
+    save_label <- "CN_MCI_AD"
+  }
+  
+  beta_ls <- get_interaction_counts(save_dir, "dnam")
+  inter_ls <- get_interaction_counts(save_dir, "interact")
+  ptau_ls <- get_interaction_counts(save_dir, "ptau")
+  
+  data.frame(
+    samples = c(save_label, save_label),
+    metric = c("pvalue < 1e-5", "fdr < 0.05"),
+    dnam = c(beta_ls$pcount, beta_ls$fcount),
+    interaction = c(inter_ls$pcount, inter_ls$fcount),
+    ptau = c(ptau_ls$pcount, ptau_ls$fcount)
+  )
+}
+```
+
+## Get All Counts
+
+```{r func_all_count}
+get_all_model_counts <- function() {
+  models <- c("CN", "MCI", "AD")
+  
+  res_df <- plyr::ldply(
+    .data = models,
+    .fun = function(save_label) {
+      get_directory_count(save_label = save_label)
+    }
+  )
+  
+  res_df
+}
+```
+
+## Get Diagnosis Counts
+
+```{r func_diag}
+get_diagnosis_counts <- function() {
+  labels <- c("CN", "MCI", "AD")
+  
+  counts <- c()
+  
+  for (label in labels) {
+    read_dir <- file.path(save_dir, paste0("linear_model_", label))
+    save_name <- file.path(read_dir, "Phenotypes.csv")
+    
+    pheno_df <- read.csv(save_name)
+    
+    counts[label] <- nrow(pheno_df)
+  }
+  
+  counts
+}
+```
+
+# Get Results
+
+## Get Diagnosis Counts
+
+```{r get_diag}
+get_diagnosis_counts()
+```
+
+## Get Signif Counts
+
+```{r get_signif}
+get_all_model_counts()
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

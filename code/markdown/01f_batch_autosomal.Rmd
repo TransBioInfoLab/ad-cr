@@ -1,0 +1,201 @@
+---
+title: "Batch correct data using Harman"
+author: 
+  - David lukacsovich^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: lumen
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set Up
+
+## Load Libraries
+
+```{r library}
+suppressMessages({
+  library(dplyr)
+  library(Harman)
+  library(SummarizedExperiment)
+  library(parallel)
+  library(doParallel)
+})
+
+base_dir <- "../../.."
+analysis_dir <- file.path(base_dir, "AD_CR")
+data_dir <- file.path(analysis_dir, "data/DNAm_Aplus/processed")
+code_dir <- file.path(analysis_dir, "code", "functions")
+
+source(file.path(code_dir, "run_pca.R"), local = TRUE)
+```
+
+# Define Functions
+
+## Batch Correct
+
+```{r func_batch}
+get_batch_params <- function(
+    dnam_data, batch_var = "batch", expt_vars = c("sex", "DX")
+) {
+  pheno_df <- dnam_data %>%
+    SummarizedExperiment::colData() %>%
+    as.data.frame()
+  
+  batches <- pheno_df %>%
+    dplyr::pull(as.name(batch_var)) %>%
+    as.character()
+  
+  expt <- pheno_df %>%
+    dplyr::pull(as.name(expt_vars[[1]])) %>%
+    as.character()
+  
+  if (length(expt_vars) > 1) {
+    for (expt_var in expt_vars[2:length(expt_vars)]) {
+      expt_add <- pheno_df %>%
+        dplyr::pull(as.name(expt_var)) %>%
+        as.character()
+      expt <- paste0(expt, "_", expt_add)
+    }
+  }
+  
+  expt <- as.factor(expt)
+  batches <- as.factor(batches)
+  
+  list(batch = batches, expt = expt)
+}
+
+batch_data <- function(
+    dnam_data, batch_var = "batch", expt_vars = c("sex", "DX"), randseed = 42
+) {
+  batch_params <- get_batch_params(dnam_data, batch_var = batch_var, expt_vars = expt_vars)
+  batch <- batch_params$batch
+  expt <- batch_params$expt
+  
+  m_data <- SummarizedExperiment::assays(dnam_data)$dnam %>%
+    Harman::shiftBetas(shiftBy = 1e-4) %>%
+    lumi::beta2m()
+  
+  harman_data <- Harman::harman(
+    m_data, expt = expt, batch = batch, limit = 0.95, randseed = randseed
+  )
+  harman_data
+}
+
+reconstruct_data <- function(dnam_data, harman_data) {
+  correct_data <- Harman::reconstructData(harman_data)
+  correct_data <- lumi::m2beta(correct_data)
+  correct_data <- SummarizedExperiment::SummarizedExperiment(
+    assays = list(dnam = correct_data),
+    rowData = dnam_data %>%
+      SummarizedExperiment::rowData(),
+    colData = dnam_data %>%
+      SummarizedExperiment::colData()
+  )
+  
+  correct_data
+}
+```
+
+## Wrapper Function
+
+```{r func_wrapper}
+pca_filter_dataset <- function(dnam_data, outlier_cutoff = 3) {
+  pca_res <- get_dnam_pca(
+    dnam_data,
+    outlier_cutoff,
+    pc_count = 5, 
+    pc_label = "BPC_",
+    outlier_label = "batch_outlier"
+  )
+  dnam_data <- pca_res$dnam_data
+  percentVar <- pca_res$percentVar
+  pca_params <- pca_res$pca_params
+  
+  pca_df <- dnam_data %>%
+    SummarizedExperiment::colData() %>%
+    as.data.frame() %>%
+  dplyr::mutate(
+    age_split_by_tertiles = as.character(.data$age_split_by_tertiles)
+  )
+  
+  dnam_data <- dnam_data[,!dnam_data$batch_outlier]
+  
+  message(
+    "The dataset had a total of ", sum(pca_df$batch_outlier),
+    " outliers out of ", nrow(pca_df),
+    " samples"
+  )
+  
+  p1 <- plot_pca(
+    pca_df,
+    "triple_Aplus",
+    "age_split_by_tertiles", 
+    percentVar,
+    pca_params,
+    outlier_cutoff,
+    pc_label = "BPC_",
+    outlier_label = "batch_outlier"
+  )
+  p2 <- plot_pca(
+    pca_df,
+    "triple_Aplus",
+    "Gender",
+    percentVar,
+    pca_params,
+    outlier_cutoff,
+    pc_label = "BPC_",
+    outlier_label = "batch_outlier"
+  )
+  
+  gridExtra::grid.arrange(p1, p2, ncol = 2, nrow = 1)
+  
+  dnam_data
+}
+
+process_dataset <- function(dnam_data, expt_vars) {
+  harman_data <- batch_data(
+    dnam_data, batch_var = "batch", expt_vars = expt_vars
+  )
+  
+  saveRDS(harman_data, file.path(data_dir, "Harman_Result.RDS"))
+  
+  correct_data <- reconstruct_data(dnam_data, harman_data)
+  
+  saveRDS(correct_data, file.path(data_dir, "Batched.RDS"))
+  
+  pca_data <- pca_filter_dataset(correct_data, outlier_cutoff = 3)
+  
+  saveRDS(pca_data, file.path(data_dir, "Batched_PCA.RDS"))
+}
+```
+
+# Run
+
+```{r run, fig.width = 14, fig.height = 6}
+dnam_data <- readRDS(file.path(data_dir, "PCA.RDS"))
+process_dataset(dnam_data, expt_vars = "age_split_by_tertiles")
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>

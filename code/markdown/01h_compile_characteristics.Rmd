@@ -1,0 +1,251 @@
+---
+title: "Calculate the characteristics distributions of samples"
+author: 
+  - David lukacsovich^[University of Miami]
+  - Lily Wang^[University of Miami]
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_document:
+    highlight: pygments
+    theme: yeti
+    toc: true
+    number_sections: true
+    df_print: paged
+    code_download: false
+    toc_float:
+      collapsed: yes
+    toc_depth: 3
+editor_options:
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set Up
+
+## Load Libraries
+
+```{r library}
+suppressMessages({
+  library(dplyr)
+  library(SummarizedExperiment)
+})
+
+
+base_dir <- "../../.."
+smoke_dir <- file.path(base_dir, "DATASET/ADNI/Phenotype/raw")
+analysis_dir <- file.path(base_dir, "AD_CR")
+data_dir <- file.path(analysis_dir, "data/DNAm_Aplus/processed")
+```
+
+# Define Functions
+
+## Load Data
+
+```{r func_load}
+filter_probes <- function(dnam_data) {
+  row_df <- dnam_data %>%
+    SummarizedExperiment::rowData() %>%
+    as.data.frame() %>%
+    dplyr::filter(
+      !.data$filter_crosshyb,
+      !.data$filter_snp
+    )
+  
+  dnam_data <- dnam_data[row_df %>% dplyr::pull("Name"),]
+}
+
+get_dnam_data <- function() {
+  dnam_data <- readRDS(file.path(data_dir, "Batched_PCA.RDS"))
+  dnam_data <- filter_probes(dnam_data)
+  dnam_data <- dnam_data[,!is.na(dnam_data$PHC_Diagnosis)]
+  dnam_data <- dnam_data[,!is.na(dnam_data$APOE4)]
+  
+  dnam_data
+}
+
+get_smoking <- function() {
+  smoke_df <- read.csv(
+    file.path(smoke_dir, "MEDHIST.csv")
+  ) %>%
+    dplyr::select("Phase", "RID", smoking = "MH16SMOK")
+}
+
+get_phenotype_data <- function() {
+  dnam_data <- get_dnam_data()
+  pheno_df <- dnam_data %>%
+    SummarizedExperiment::colData() %>%
+    as.data.frame() %>%
+    dplyr::mutate(
+      cond = ifelse(
+        .data$PHC_Diagnosis == 1, "CN",
+        ifelse(.data$PHC_Diagnosis == 2, "MCI", "AD")
+      ),
+      cond = factor(.data$cond, levels = c("CN", "MCI", "AD")),
+      APOE4 = ifelse(.data$APOE4 > 0, "APOE", "Not")
+    )
+  
+  smoke_df <- get_smoking()
+  
+  pheno_df <- pheno_df %>%
+    dplyr::left_join(smoke_df, by = c("Phase", "RID"))
+  
+  pheno_df
+}
+```
+
+## Get Statistics
+
+```{r func_stats}
+get_numeric_stats <- function(pheno_df, column) {
+  pheno_df$data <- pheno_df[,column]
+  
+  all = paste0(
+    round(mean(pheno_df$data), 2),
+    " (",
+    round(stats::sd(pheno_df$data), 2),
+    ")"
+  )
+  cond_df <- pheno_df %>%
+    dplyr::group_by(.data$cond) %>%
+    dplyr::summarise(
+      ave = round(mean(.data$data), 2),
+      sd = round(stats::sd(.data$data), 2)
+    ) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(vals = paste0(.data$ave, " (", .data$sd, ")")) %>%
+    dplyr::arrange(.data$cond)
+  
+  pval <- rstatix::kruskal_test(data = pheno_df, as.formula("data ~ cond"))$p
+  
+  data.frame(
+    label = column,
+    category = "",
+    all = all,
+    cn = cond_df$vals[[1]],
+    mci = cond_df$vals[[2]],
+    ad = cond_df$vals[[3]],
+    pval = pval
+  )
+}
+
+get_categoric_stats <- function(pheno_df, column) {
+  pheno_df$data <- pheno_df[,column]
+  
+  total_df <- pheno_df %>%
+    dplyr::group_by(.data$cond) %>%
+    dplyr::summarise(total = dplyr::n()) %>%
+    dplyr::ungroup()
+  
+  count_df <- pheno_df %>%
+    dplyr::select("data", "cond") %>%
+    table() %>%
+    as.data.frame() %>%
+    dplyr::left_join(total_df, by = "cond") %>%
+    dplyr::mutate(rate = round(.data$Freq / .data$total * 100, 2)) %>%
+    dplyr::mutate(vals = paste0(.data$Freq, " (", .data$rate, ")")) %>%
+    dplyr::select("cond", "data", "vals") %>%
+    tidyr::pivot_wider(names_from = "cond", values_from = "vals")
+  
+  all_df <- pheno_df %>%
+    dplyr::mutate(cond = "all") %>%
+    dplyr::select("data", "cond") %>%
+    table() %>%
+    as.data.frame() %>%
+    dplyr::mutate(total = nrow(pheno_df)) %>%
+    dplyr::mutate(rate = round(.data$Freq / .data$total * 100, 2)) %>%
+    dplyr::mutate(vals = paste0(.data$Freq, " (", .data$rate, ")")) %>%
+    dplyr::select("cond", "data", "vals") %>%
+    tidyr::pivot_wider(names_from = "cond", values_from = "vals")
+  
+  count_df <- all_df %>%
+    dplyr::left_join(count_df, by = "data") %>%
+    dplyr::rename(category = "data")
+  
+  pval <- stats::fisher.test(
+    pheno_df %>% dplyr::select("cond", "data") %>% table()
+  )$p.value
+  
+  data.frame(
+    label = column,
+    category = count_df$category,
+    all = count_df$all,
+    cn = count_df$CN,
+    mci = count_df$MCI,
+    ad = count_df$AD,
+    pval = pval
+  )
+}
+
+get_stats <- function(pheno_df, column, category = c("numeric", "categoric")) {
+  category <- match.arg(category)
+  
+  if (category == "numeric") {
+    res_df <- get_numeric_stats(pheno_df, column)
+  } else {
+    res_df <- get_categoric_stats(pheno_df, column)
+  }
+  
+  res_df
+}
+```
+
+# Get Table
+
+## Load Phenotypes
+
+```{r load}
+pheno_df <- get_phenotype_data()
+```
+
+## Compile Statistics
+
+```{r stats}
+analysis_df <- data.frame(
+  columns = c(
+    "age_at_visit",
+    "Gender",
+    "APOE4",
+    "PHC_Education",
+    "smoking",
+    "cond",
+    "AB42_RAW",
+    "pTau_RAW",
+    "AT_class"
+  ),
+  categories = c(
+    "numeric",
+    "categoric",
+    "categoric",
+    "numeric",
+    "categoric",
+    "categoric",
+    "numeric",
+    "numeric",
+    "categoric"
+  )
+)
+
+res_df <- plyr::ldply(
+  .data = 1:nrow(analysis_df),
+  .fun = function(index) {
+    column <- analysis_df$columns[[index]]
+    category <- analysis_df$categories[[index]]
+    
+    get_stats(pheno_df, column, category)
+  }
+)
+
+res_df
+```
+
+# Session Information
+
+<details>
+  <summary>**Session Info**</summary>
+```{r session}
+sessionInfo()
+```
+</details>
