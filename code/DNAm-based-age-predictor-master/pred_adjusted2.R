@@ -1,3 +1,8 @@
+# This script is from https://github.com/qzhang314/DNAm-based-age-predictor
+# It is presented here, as we slightly modified it so that we could call it in
+# as functions instead of running them from the termianl. All credits go to
+# the original creators
+
 ##################################################################################################
 ###                                                                                              #      
 ###        This Script is used to do age prediction based on DNA methylation data(450K)          #
