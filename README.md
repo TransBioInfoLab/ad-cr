@@ -36,7 +36,7 @@ Cognitive reserve (CR) refers to differences in the adaptability of cognitive pr
 | code/markdown/02e_summarise_combp.Rmd         | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/02e_summarise_combp.Rmd) |
 | code/markdown/02f_sig_betavals.Rmd            | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/02f_sig_betavals.Rmd) |
 | code/markdown/02g_get_miami_ad_statistics.Rmd | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/02g_get_miami_ad_statistics.Rmd) |
-
+| summary statistics for CR-associated DNAm     |     |
 ### 3. Integrative analyses (pathway analysis, eQTm, brain-blood DNAm correlations)  
 
 | File                 | Link |
