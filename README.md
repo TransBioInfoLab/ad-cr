@@ -3,7 +3,7 @@ David Lukacsovich, Juan I. Young, Lissette Gomez, Brian W. Kunkle, Zhixin Mao, W
 
 ### Description
 
-This GitHub repository includes scripts used for the analyses in the above manuscript. 
+This GitHub repository includes **scripts** used for the analyses in the above manuscript and the resulting **summary statistics**. 
 
 Cognitive reserve (CR) refers to differences in the adaptability of cognitive processes that modify the impact of Alzheimer’s disease (AD) pathology on cognitive performance.  Currently there are no established blood-based biomarkers of CR in prodromal AD. In this study, we operationalize CR as memory reserve, defined as moderation (attenuation) of the CSF pTau181-memory association. DNA methylation (DNAm) integrates genetic and environmental influences and may capture biological processes that mitigate the impact of AD pathology on memory. We aimed to identify blood DNAm loci that moderate the association between cerebrospinal fluid (CSF) phosphorylated tau (pTau181) and memory in mild cognitive impairment (MCI). We also sought to determine if a DNAm-based signature of memory reserve predicts future memory decline. 
 
@@ -36,8 +36,13 @@ Cognitive reserve (CR) refers to differences in the adaptability of cognitive pr
 | code/markdown/02e_summarise_combp.Rmd         | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/02e_summarise_combp.Rmd) |
 | code/markdown/02f_sig_betavals.Rmd            | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/02f_sig_betavals.Rmd) |
 | code/markdown/02g_get_miami_ad_statistics.Rmd | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/02g_get_miami_ad_statistics.Rmd) |
-| summary statistics for CR-associated DNAm     |     |
-### 3. Integrative analyses (pathway analysis, eQTm, brain-blood DNAm correlations)  
+| summary 
+
+### 3. Summary Statistics for CR-associated DNAm 
+
+[linke to the file](https://www.dropbox.com/scl/fi/m24yjftognksoy915o8zt/dnam_pTau_intxn_summary_stats.csv?rlkey=i3ztikgs5xqijso3yz98y6qpt&dl=0)
+
+### 4. Integrative analyses (pathway analysis, eQTm, brain-blood DNAm correlations)  
 
 | File                 | Link |
 |----------------------|-------------|
@@ -45,7 +50,7 @@ Cognitive reserve (CR) refers to differences in the adaptability of cognitive pr
 | code/markdown/03b_eQTM_association.Rmd        | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/03b_eQTM_association.Rmd) |
 | code/markdown/03c_brain_blood_correlation.Rmd | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/03c_brain_blood_correlation.Rmd) |
 
-### 4. Figures
+### 5. Figures
 
 | File                 | Link |
 |----------------------|-------------|
@@ -53,7 +58,7 @@ Cognitive reserve (CR) refers to differences in the adaptability of cognitive pr
 | No association between DNAm vs. pTau or memory (DMRs)  | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/04b_dmr_plots.Rmd) |
 | No association between DNAm vs. pTau or memory (CpGs)  | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/_DNAm_pTau_interaction_plots_MCI_12-14-2025.Rmd) |
 
-### 5. Sensitivity analysis that additionally adjusts smoking status
+### 6. Sensitivity analysis that additionally adjusts smoking status
 
 | File                 | Link |
 |----------------------|-------------|
@@ -63,7 +68,7 @@ Cognitive reserve (CR) refers to differences in the adaptability of cognitive pr
 | code/markdown/05d_summarize_combp.Rmd         | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/05d_summarize_combp.Rmd) |
 | code/markdown/05e_get_smoking_summaries.Rmd   | [Link to the script](https://github.com/TransBioInfoLab/AD_CR/blob/main/code/markdown/05e_get_smoking_summaries.Rmd) |
 
-### 5. Methylation-based Reserve Scores
+### 7. Methylation-based Reserve Scores
 
 | File                 | Link |
 |----------------------|-------------|
